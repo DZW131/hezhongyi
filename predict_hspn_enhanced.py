@@ -82,15 +82,20 @@ def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5
                     # Compute probabilities based on number of classes
                     if net.n_classes > 1:
                         probs = F.softmax(output, dim=1)[0]
+                        if net.n_classes == 2:
+                            target_prob = probs[1]
+                            full_probs = F.interpolate(
+                                target_prob.unsqueeze(0).unsqueeze(0),
+                                size=(tile_size, tile_size),
+                                mode='bilinear',
+                            )[0][0]
+                            mask_tile = (full_probs > out_threshold).cpu().numpy().astype(np.uint8)
+                        else:
+                            full_probs = F.interpolate(probs.unsqueeze(0), size=(tile_size, tile_size), mode='bilinear')[0]
+                            mask_tile = full_probs.argmax(dim=0).cpu().numpy()
                     else:
                         probs = torch.sigmoid(output)[0]
-                    
-                    # Interpolate back to original tile size to ensure pixel alignment
-                    full_probs = F.interpolate(probs.unsqueeze(0), size=(tile_size, tile_size), mode='bilinear')[0]
-                    
-                    if net.n_classes > 1:
-                        mask_tile = full_probs.argmax(dim=0).cpu().numpy()
-                    else:
+                        full_probs = F.interpolate(probs.unsqueeze(0), size=(tile_size, tile_size), mode='bilinear')[0]
                         mask_tile = (full_probs[0] > out_threshold).cpu().numpy().astype(np.uint8)
 
                 # Map the predicted tile mask back into the global mask array
@@ -106,7 +111,7 @@ def get_args():
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Sliding window tile size')
     parser.add_argument('--threshold', type=float, default=0.5, help='Probability threshold for mask generation')
     parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
-    parser.add_argument('--classes', '-c', type=int, default=1, help='Number of target classes')
+    parser.add_argument('--classes', '-c', type=int, default=2, help='Number of target classes')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -142,8 +147,8 @@ if __name__ == '__main__':
         )
         
         save_path = output_files[i]
-        # For binary segmentation, rescale 0-1 to 0-255 for visualization
-        if args.classes <= 1:
+        # For binary-style segmentation outputs, rescale 0/1 to 0/255 for visibility.
+        if args.classes <= 2:
             mask_to_save = Image.fromarray(result_mask * 255)
         else:
             mask_to_save = Image.fromarray(result_mask.astype(np.uint8))

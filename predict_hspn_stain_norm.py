@@ -44,7 +44,7 @@ def color_transfer_reinhard(source_tile):
     # Clip values to valid RGB range
     return np.clip(norm_tile, 0, 255).astype(np.uint8)
 
-def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
+def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
     """
     Predicts masks for large TIFF using sliding window and color normalization.
     """
@@ -88,7 +88,7 @@ def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_thr
 
                 # Standard Preprocessing
                 tile_pil = Image.fromarray(tile)
-                img_tensor = preprocess_image_tensor(tile_pil, 1.0, device)
+                img_tensor = preprocess_image_tensor(tile_pil, scale_factor, device)
 
                 with torch.no_grad():
                     output = net(img_tensor)
@@ -120,6 +120,7 @@ def get_args():
     parser.add_argument('--input', '-i', nargs='+', required=True, help='Input TIFF file path')
     parser.add_argument('--output', '-o', nargs='+', help='Output filename')
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Tile size')
+    parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--threshold', type=float, default=0.5, help='Confidence threshold')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes in the checkpoint')
     return parser.parse_args()
@@ -146,7 +147,8 @@ if __name__ == '__main__':
         logging.info(f'Normalizing and Predicting: {filename}...')
         mask = predict_hspn_with_stain_norm(net, filename, device, 
                                             tile_size=args.tile_size, 
-                                            out_threshold=args.threshold)
+                                            out_threshold=args.threshold,
+                                            scale_factor=args.scale)
         
         # Save as PNG
         mask_img = Image.fromarray(mask * 255)

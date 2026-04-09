@@ -424,6 +424,7 @@ python predict_hspn_enhanced.py \
   --input /root/datasets/diyingjia/202601260012.tif \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/hspn_enhanced_pred.png \
   --classes 2 \
+  --scale 0.5 \
   --threshold 0.5 \
   --tile-size 1024
 ```
@@ -436,9 +437,37 @@ python predict_hspn_stain_norm.py \
   --input /root/datasets/diyingjia/202601260012.tif \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/hspn_stain_norm_pred.png \
   --classes 2 \
+  --scale 0.5 \
   --threshold 0.5 \
   --tile-size 1024
 ```
+
+### 9.5 Recommended testing strategy for in-hospital slides
+
+When you test internal hospital slides, do not assume the HSPN-specific scripts will always be better than direct inference. In practice:
+
+- `predict_tiff.py` is the baseline and should always be tested first
+- `predict_hspn_enhanced.py` can improve recall on pale slides, but it can also over-segment
+- `predict_hspn_stain_norm.py` is useful when the staining style is clearly different from HuBMAP, but it should still be compared against the direct baseline
+
+Recommended order:
+
+1. Run direct inference first with the same `--scale` used during training.
+2. If the direct result is too conservative or misses obvious glomeruli, try `predict_hspn_enhanced.py`.
+3. If the staining style is strongly shifted, also try `predict_hspn_stain_norm.py`.
+4. Compare the masks side by side and prefer the result that is medically plausible, not simply the one with the largest positive area.
+
+Recommended settings for the current HuBMAP baseline:
+
+- always use `--classes 2`
+- always use `--scale 0.5`
+- start from `--threshold 0.5`
+- if `predict_hspn_enhanced.py` produces too much foreground, increase the threshold and compare `0.6`, `0.7`, and `0.8`
+
+Important note:
+
+- for the current two-class checkpoint, the HSPN scripts interpret class 1 as the glomerulus class
+- `predict_hspn_enhanced.py` now uses the positive-class probability threshold when `--classes 2`, so the threshold is meaningful for suppressing over-segmentation
 
 ## 10. End-to-end workflow for your server
 
