@@ -12,6 +12,7 @@ from tqdm import tqdm
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
+from utils.inference_postprocessing import apply_binary_postprocessing, estimate_tissue_mask
 
 
 def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) -> torch.Tensor:
@@ -21,7 +22,19 @@ def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) 
     return image_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
 
 
-def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
+def predict_hspn_tiles(
+    net,
+    tiff_path,
+    device,
+    tile_size=1024,
+    out_threshold=0.5,
+    scale_factor=1.0,
+    apply_tissue_mask=False,
+    white_threshold=230.0,
+    min_component_area=0,
+    max_component_area=0,
+    max_component_extent=0,
+):
     """
     Predicts a mask for a large TIFF image using a sliding window approach 
     with Contrast Stretching preprocessing to handle domain shift (pale staining).
@@ -49,7 +62,8 @@ def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5
                 x_end = min(x + tile_size, w)
                 
                 # Extract the current tile from the large image
-                tile = image_data[y:y_end, x:x_end]
+                raw_tile = image_data[y:y_end, x:x_end]
+                tile = raw_tile
                 
                 # --- [Preprocessing: Linear Contrast Stretching] ---
                 # Purpose: Normalize pale hospital slides to match HuBMAP distribution.
@@ -98,6 +112,18 @@ def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5
                         full_probs = F.interpolate(probs.unsqueeze(0), size=(tile_size, tile_size), mode='bilinear')[0]
                         mask_tile = (full_probs[0] > out_threshold).cpu().numpy().astype(np.uint8)
 
+                if net.n_classes <= 2:
+                    tissue_mask = None
+                    if apply_tissue_mask:
+                        tissue_mask = estimate_tissue_mask(raw_tile, white_threshold=white_threshold)
+                    mask_tile = apply_binary_postprocessing(
+                        mask_tile,
+                        tissue_mask=tissue_mask,
+                        min_component_area=min_component_area,
+                        max_component_area=max_component_area,
+                        max_component_extent=max_component_extent,
+                    )
+
                 # Map the predicted tile mask back into the global mask array
                 full_mask[y:y_end, x:x_end] = mask_tile[0:actual_h, 0:actual_w]
 
@@ -112,6 +138,16 @@ def get_args():
     parser.add_argument('--threshold', type=float, default=0.5, help='Probability threshold for mask generation')
     parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of target classes')
+    parser.add_argument('--apply-tissue-mask', action='store_true', default=False,
+                        help='Keep predictions only inside non-white tissue regions estimated from the raw tile')
+    parser.add_argument('--white-threshold', type=float, default=230.0,
+                        help='Intensity threshold used to estimate non-white tissue for postprocessing')
+    parser.add_argument('--min-component-area', type=int, default=0,
+                        help='Discard connected components smaller than this many pixels')
+    parser.add_argument('--max-component-area', type=int, default=0,
+                        help='Discard connected components larger than this many pixels')
+    parser.add_argument('--max-component-extent', type=int, default=0,
+                        help='Discard connected components whose width or height exceeds this limit')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -144,6 +180,11 @@ if __name__ == '__main__':
             tile_size=args.tile_size,
             out_threshold=args.threshold,
             scale_factor=args.scale,
+            apply_tissue_mask=args.apply_tissue_mask,
+            white_threshold=args.white_threshold,
+            min_component_area=args.min_component_area,
+            max_component_area=args.max_component_area,
+            max_component_extent=args.max_component_extent,
         )
         
         save_path = output_files[i]

@@ -12,6 +12,7 @@ from tqdm import tqdm
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
+from utils.inference_postprocessing import apply_binary_postprocessing, estimate_tissue_mask
 
 
 def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) -> torch.Tensor:
@@ -44,7 +45,19 @@ def color_transfer_reinhard(source_tile):
     # Clip values to valid RGB range
     return np.clip(norm_tile, 0, 255).astype(np.uint8)
 
-def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
+def predict_hspn_with_stain_norm(
+    net,
+    tiff_path,
+    device,
+    tile_size=1024,
+    out_threshold=0.5,
+    scale_factor=1.0,
+    apply_tissue_mask=False,
+    white_threshold=230.0,
+    min_component_area=0,
+    max_component_area=0,
+    max_component_extent=0,
+):
     """
     Predicts masks for large TIFF using sliding window and color normalization.
     """
@@ -68,7 +81,8 @@ def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_thr
                 x_end = min(x + tile_size, w)
                 
                 # Extract tile
-                tile = image_data[y:y_end, x:x_end]
+                raw_tile = image_data[y:y_end, x:x_end]
+                tile = raw_tile
                 
                 # --- [Color Normalization Step] ---
                 # This makes the pale HSPN slide look like a dark HuBMAP slide
@@ -109,6 +123,18 @@ def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_thr
                     
                     mask_tile = (full_probs > out_threshold).cpu().numpy().astype(np.uint8)
 
+                if net.n_classes <= 2:
+                    tissue_mask = None
+                    if apply_tissue_mask:
+                        tissue_mask = estimate_tissue_mask(raw_tile, white_threshold=white_threshold)
+                    mask_tile = apply_binary_postprocessing(
+                        mask_tile,
+                        tissue_mask=tissue_mask,
+                        min_component_area=min_component_area,
+                        max_component_area=max_component_area,
+                        max_component_extent=max_component_extent,
+                    )
+
                 # Stitch back to full mask
                 full_mask[y:y_end, x:x_end] = mask_tile[0:actual_h, 0:actual_w]
 
@@ -123,6 +149,16 @@ def get_args():
     parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--threshold', type=float, default=0.5, help='Confidence threshold')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes in the checkpoint')
+    parser.add_argument('--apply-tissue-mask', action='store_true', default=False,
+                        help='Keep predictions only inside non-white tissue regions estimated from the raw tile')
+    parser.add_argument('--white-threshold', type=float, default=230.0,
+                        help='Intensity threshold used to estimate non-white tissue for postprocessing')
+    parser.add_argument('--min-component-area', type=int, default=0,
+                        help='Discard connected components smaller than this many pixels')
+    parser.add_argument('--max-component-area', type=int, default=0,
+                        help='Discard connected components larger than this many pixels')
+    parser.add_argument('--max-component-extent', type=int, default=0,
+                        help='Discard connected components whose width or height exceeds this limit')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -148,7 +184,12 @@ if __name__ == '__main__':
         mask = predict_hspn_with_stain_norm(net, filename, device, 
                                             tile_size=args.tile_size, 
                                             out_threshold=args.threshold,
-                                            scale_factor=args.scale)
+                                            scale_factor=args.scale,
+                                            apply_tissue_mask=args.apply_tissue_mask,
+                                            white_threshold=args.white_threshold,
+                                            min_component_area=args.min_component_area,
+                                            max_component_area=args.max_component_area,
+                                            max_component_extent=args.max_component_extent)
         
         # Save as PNG
         mask_img = Image.fromarray(mask * 255)

@@ -501,11 +501,17 @@ Recommended settings for the current HuBMAP baseline:
 - start from `--threshold 0.7` for `predict_hspn_enhanced.py`
 - use `--threshold 0.5` for `predict_hspn_stain_norm.py`
 - if `predict_hspn_enhanced.py` produces too much foreground, increase the threshold and compare `0.6`, `0.7`, and `0.8`
+- if HSPN predictions still contain large block-like false positives, enable tissue masking and connected-component filtering
 
 Important note:
 
 - for the current two-class checkpoint, the HSPN scripts interpret class 1 as the glomerulus class
 - `predict_hspn_enhanced.py` now uses the positive-class probability threshold when `--classes 2`, so the threshold is meaningful for suppressing over-segmentation
+- HSPN scripts also support postprocessing flags:
+  - `--apply-tissue-mask`
+  - `--min-component-area`
+  - `--max-component-area`
+  - `--max-component-extent`
 
 Example commands for the current internal slide `/root/datasets/diyingjia/202601260012.tif`:
 
@@ -540,6 +546,40 @@ python predict_hspn_stain_norm.py \
   --classes 2 \
   --threshold 0.5
 ```
+
+If HSPN outputs still show large block-like contamination, try the filtered versions below:
+
+```bash
+# contrast-enhanced HSPN inference with tissue and connected-component filtering
+python predict_hspn_enhanced.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --input /root/datasets/diyingjia/202601260012.tif \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/202601260012_hspn_enhanced_filtered.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.7 \
+  --apply-tissue-mask \
+  --min-component-area 150 \
+  --max-component-area 30000 \
+  --max-component-extent 384
+
+# stain-normalized HSPN inference with tissue and connected-component filtering
+python predict_hspn_stain_norm.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --input /root/datasets/diyingjia/202601260012.tif \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/202601260012_hspn_stainnorm_filtered.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5 \
+  --apply-tissue-mask \
+  --min-component-area 150 \
+  --max-component-area 30000 \
+  --max-component-extent 384
+```
+
+These filtering values are practical starting points for the current internal slide tests. They are not universal constants, so always verify the final mask visually.
 
 ## 10. End-to-end workflow for your server
 
