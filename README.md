@@ -2,6 +2,8 @@
 
 This repository is a PyTorch U-Net project adapted for HuBMAP kidney glomeruli segmentation on a Linux server.
 
+If you want a more presentation-oriented explanation of the project goals, strategy, current results, and suggested reporting language for teachers or doctors, see [PROJECT_PRESENTATION_GUIDE.md](PROJECT_PRESENTATION_GUIDE.md).
+
 The current workflow is designed for the dataset layout you already have on the server:
 
 ```text
