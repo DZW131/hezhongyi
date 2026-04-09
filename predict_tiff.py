@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -11,6 +12,14 @@ from tqdm import tqdm
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
+
+
+def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) -> torch.Tensor:
+    image_array = BasicDataset.preprocess(None, pil_img, scale_factor, is_mask=False)
+    image_array = np.ascontiguousarray(image_array.copy())
+    image_tensor = torch.from_numpy(image_array)
+    return image_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
+
 
 def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
     """
@@ -59,8 +68,7 @@ def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scal
                 tile_pil = Image.fromarray(tile)
                 
                 # Preprocessing and inference
-                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, scale_factor, is_mask=False))
-                img_tensor = img_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
+                img_tensor = preprocess_image_tensor(tile_pil, scale_factor, device)
 
                 with torch.no_grad():
                     output = net(img_tensor)
@@ -138,6 +146,7 @@ if __name__ == '__main__':
             mask_img = Image.fromarray(mask * 255)
         else:
             mask_img = Image.fromarray(mask.astype(np.uint8))
-            
+
+        Path(out_name).parent.mkdir(parents=True, exist_ok=True)
         mask_img.save(out_name)
         logging.info(f'Successfully saved mask to: {out_name}')

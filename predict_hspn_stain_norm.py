@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -11,6 +12,14 @@ from tqdm import tqdm
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
+
+
+def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) -> torch.Tensor:
+    image_array = BasicDataset.preprocess(None, pil_img, scale_factor, is_mask=False)
+    image_array = np.ascontiguousarray(image_array.copy())
+    image_tensor = torch.from_numpy(image_array)
+    return image_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
+
 
 def color_transfer_reinhard(source_tile):
     """
@@ -79,8 +88,7 @@ def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_thr
 
                 # Standard Preprocessing
                 tile_pil = Image.fromarray(tile)
-                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 1.0, is_mask=False))
-                img_tensor = img_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
+                img_tensor = preprocess_image_tensor(tile_pil, 1.0, device)
 
                 with torch.no_grad():
                     output = net(img_tensor)
@@ -142,5 +150,6 @@ if __name__ == '__main__':
         
         # Save as PNG
         mask_img = Image.fromarray(mask * 255)
+        Path(out_files[i]).parent.mkdir(parents=True, exist_ok=True)
         mask_img.save(out_files[i])
         logging.info(f'Inference finished. Saved to: {out_files[i]}')

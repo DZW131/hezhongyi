@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -18,7 +19,9 @@ def predict_img(net,
                 scale_factor=1,
                 out_threshold=0.5):
     net.eval()
-    img = torch.from_numpy(BasicDataset.preprocess(None, full_img, scale_factor, is_mask=False))
+    image_array = BasicDataset.preprocess(None, full_img, scale_factor, is_mask=False)
+    image_array = np.ascontiguousarray(image_array.copy())
+    img = torch.from_numpy(image_array)
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
@@ -109,6 +112,7 @@ if __name__ == '__main__':
         if not args.no_save:
             out_filename = out_files[i]
             result = mask_to_image(mask, mask_values)
+            Path(out_filename).parent.mkdir(parents=True, exist_ok=True)
             result.save(out_filename)
             logging.info(f'Mask saved to {out_filename}')
 
