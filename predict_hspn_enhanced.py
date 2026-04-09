@@ -1,0 +1,140 @@
+import argparse
+import logging
+import os
+import numpy as np
+import torch
+import torch.nn.functional as F
+from PIL import Image
+import tifffile
+from tqdm import tqdm
+
+from unet import UNet
+from utils.data_loading import BasicDataset
+
+def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
+    """
+    Predicts a mask for a large TIFF image using a sliding window approach 
+    with Contrast Stretching preprocessing to handle domain shift (pale staining).
+    """
+    net.eval()
+    
+    with tifffile.TiffFile(tiff_path) as tif:
+        # Load the TIFF image data
+        image_data = tif.asarray()
+        if image_data.ndim == 3:
+            h, w, c = image_data.shape
+        else:
+            h, w = image_data.shape
+            c = 1
+        
+        logging.info(f"Full image dimensions: {w}x{h}")
+        
+        # Initialize an empty mask for the entire WSI (Whole Slide Image)
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        
+        # Iterate over tiles using a sliding window
+        for y in tqdm(range(0, h, tile_size), desc="Processing rows"):
+            for x in range(0, w, tile_size):
+                y_end = min(y + tile_size, h)
+                x_end = min(x + tile_size, w)
+                
+                # Extract the current tile from the large image
+                tile = image_data[y:y_end, x:x_end]
+                
+                # --- [Preprocessing: Linear Contrast Stretching] ---
+                # Purpose: Normalize pale hospital slides to match HuBMAP distribution.
+                # It maps the 2nd and 98th percentiles to 0 and 255.
+                if tile.ndim == 3 and tile.max() > 0:
+                    p_low, p_high = np.percentile(tile, (2, 98))
+                    tile = np.clip(tile, p_low, p_high)
+                    # Avoid division by zero and rescale to 0-255
+                    tile = ((tile - p_low) / (max(p_high - p_low, 1)) * 255).astype(np.uint8)
+                # ----------------------------------------------------
+
+                # Handle boundary tiles that are smaller than tile_size
+                actual_h, actual_w = tile.shape[0], tile.shape[1]
+                pad_h = tile_size - actual_h
+                pad_w = tile_size - actual_w
+                
+                if pad_h > 0 or pad_w > 0:
+                    if tile.ndim == 3:
+                        tile = np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant')
+                    else:
+                        tile = np.pad(tile, ((0, pad_h), (0, pad_w)), mode='constant')
+
+                # Convert to PIL Image to utilize standard preprocessing pipeline
+                tile_pil = Image.fromarray(tile)
+                
+                # Preprocess for U-Net (Rescaling to 1.0)
+                #img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 1.0, is_mask=False))
+               
+                #img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 0.5, is_mask=False))
+                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 2.0, is_mask=False))
+                img_tensor = img_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
+
+                with torch.no_grad():
+                    output = net(img_tensor)
+                    
+                    # Compute probabilities based on number of classes
+                    if net.n_classes > 1:
+                        probs = F.softmax(output, dim=1)[0]
+                    else:
+                        probs = torch.sigmoid(output)[0]
+                    
+                    # Interpolate back to original tile size to ensure pixel alignment
+                    full_probs = F.interpolate(probs.unsqueeze(0), size=(tile_size, tile_size), mode='bilinear')[0]
+                    
+                    if net.n_classes > 1:
+                        mask_tile = full_probs.argmax(dim=0).cpu().numpy()
+                    else:
+                        mask_tile = (full_probs[0] > out_threshold).cpu().numpy().astype(np.uint8)
+
+                # Map the predicted tile mask back into the global mask array
+                full_mask[y:y_end, x:x_end] = mask_tile[0:actual_h, 0:actual_w]
+
+    return full_mask
+
+def get_args():
+    parser = argparse.ArgumentParser(description='Predict HSPN masks from large TIFFs with Contrast Enhancement')
+    parser.add_argument('--model', '-m', default='checkpoints/checkpoint_epoch19.pth', help='Path to model checkpoint')
+    parser.add_argument('--input', '-i', nargs='+', required=True, help='Paths to input .tiff files')
+    parser.add_argument('--output', '-o', nargs='+', help='Custom output filenames')
+    parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Sliding window tile size')
+    parser.add_argument('--threshold', type=float, default=0.5, help='Probability threshold for mask generation')
+    parser.add_argument('--classes', '-c', type=int, default=1, help='Number of target classes')
+    return parser.parse_args()
+
+if __name__ == '__main__':
+    args = get_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Initialize U-Net architecture
+    net = UNet(n_channels=3, n_classes=args.classes)
+    
+    logging.info(f'Loading weights from: {args.model}')
+    state_dict = torch.load(args.model, map_location=device)
+    if 'mask_values' in state_dict:
+        state_dict.pop('mask_values')
+    net.load_state_dict(state_dict)
+    net.to(device=device)
+    logging.info('Model successfully loaded on device: {}'.format(device))
+
+    input_files = args.input
+    output_files = args.output or [f"{os.path.splitext(f)[0]}_PRED_HSPN.png" for f in input_files]
+
+    for i, file_path in enumerate(input_files):
+        logging.info(f'Processing image: {file_path}...')
+        # Execute prediction with built-in contrast stretching
+        result_mask = predict_hspn_tiles(net, file_path, device, tile_size=args.tile_size, out_threshold=args.threshold)
+        
+        save_path = output_files[i]
+        # For binary segmentation, rescale 0-1 to 0-255 for visualization
+        if args.classes <= 1:
+            mask_to_save = Image.fromarray(result_mask * 255)
+        else:
+            mask_to_save = Image.fromarray(result_mask.astype(np.uint8))
+            
+        mask_to_save.save(save_path)
+        logging.info(f'Saved prediction to: {save_path}')
