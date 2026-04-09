@@ -21,6 +21,7 @@ IMAGE_SUFFIXES = ('.tif', '.tiff')
 MASK_SUFFIXES = ('.png', '.tif', '.tiff')
 ANNOTATION_KEYS = ('encoding', 'rle', 'segmentation')
 AVAILABLE_ANNOTATION_FORMATS = ('auto', 'csv-rle', 'mask', 'json-polygons')
+AVAILABLE_MISSING_ROI_POLICIES = ('skip-slide', 'ignore-roi', 'error')
 
 
 def parse_args():
@@ -50,6 +51,8 @@ def parse_args():
                         help='Optional anatomical labels to keep, for example Cortex')
     parser.add_argument('--min-roi-coverage', type=float, default=0.05,
                         help='Minimum anatomical ROI coverage required to keep a tile when roi-labels are used')
+    parser.add_argument('--missing-roi-policy', choices=AVAILABLE_MISSING_ROI_POLICIES, default='skip-slide',
+                        help='What to do when a slide does not contain the requested ROI labels')
     parser.add_argument('--tile-size', type=int, default=1024, help='Tile size before optional resizing')
     parser.add_argument('--stride', type=int, default=1024, help='Sliding-window stride')
     parser.add_argument('--downsample', type=float, default=1.0,
@@ -252,7 +255,8 @@ def polygon_rings_from_geometry(geometry: Dict[str, object]) -> List[List[List[f
 def rasterize_features(image_shape, features: Sequence[Dict[str, object]], target_labels: Optional[Iterable[str]]) -> np.ndarray:
     height, width = image_shape[:2]
     target_label_set = {normalize_label(label) for label in target_labels} if target_labels else set()
-    mask_image = Image.new('L', (width, height), 0)
+    # Mode "1" uses a 1-bit bitmap, which is much lighter than an 8-bit full-slide mask.
+    mask_image = Image.new('1', (width, height), 0)
     draw = ImageDraw.Draw(mask_image)
 
     for feature in features:
@@ -358,7 +362,9 @@ def load_mask(
         annotation_path = find_json_path(annotations_dir, slide_id, annotation_json_suffix)
         if annotation_path is None:
             raise FileNotFoundError('No annotation JSON found for slide {}'.format(slide_id))
+        logging.info('Reading glomerulus annotations from %s', annotation_path)
         features = read_geojson_features(annotation_path)
+        logging.info('Loaded %s annotation features for slide %s', len(features), slide_id)
         return rasterize_features(image_shape, features, target_labels=target_labels)
 
     raise ValueError('Unsupported annotation format {}'.format(annotation_format))
@@ -370,23 +376,38 @@ def load_roi_mask(
     anatomical_dir: Path,
     anatomical_json_suffix: str,
     roi_labels: Sequence[str],
+    missing_roi_policy: str,
 ) -> Optional[np.ndarray]:
     if not roi_labels:
         return None
 
     anatomical_path = find_json_path(anatomical_dir, slide_id, anatomical_json_suffix)
     if anatomical_path is None:
-        raise FileNotFoundError('No anatomical JSON found for slide {}'.format(slide_id))
+        message = 'No anatomical JSON found for slide {}'.format(slide_id)
+        if missing_roi_policy == 'ignore-roi':
+            logging.warning('%s. Continuing without ROI filtering for this slide.', message)
+            return None
+        if missing_roi_policy == 'skip-slide':
+            logging.warning('%s. Skipping this slide.', message)
+            return None
+        raise FileNotFoundError(message)
 
+    logging.info('Reading anatomical annotations from %s', anatomical_path)
     features = read_geojson_features(anatomical_path)
+    logging.info('Loaded %s anatomical features for slide %s', len(features), slide_id)
     roi_mask = rasterize_features(image_shape, features, target_labels=roi_labels)
     if roi_mask.max() == 0:
-        raise ValueError(
-            'Anatomical JSON {} did not contain any ROI labels matching {}'.format(
-                anatomical_path,
-                ', '.join(roi_labels),
-            )
+        message = 'Anatomical JSON {} did not contain any ROI labels matching {}'.format(
+            anatomical_path,
+            ', '.join(roi_labels),
         )
+        if missing_roi_policy == 'ignore-roi':
+            logging.warning('%s. Continuing without ROI filtering for this slide.', message)
+            return None
+        if missing_roi_policy == 'skip-slide':
+            logging.warning('%s. Skipping this slide.', message)
+            return None
+        raise ValueError(message)
     return roi_mask
 
 
@@ -628,7 +649,15 @@ if __name__ == '__main__':
     for slide_id in tqdm(slide_ids, desc='Slides', unit='slide'):
         split = slide_splits.get(slide_id, 'train')
         image_path = find_image_path(images_dir, slide_id)
+        logging.info('Opening slide %s from %s', slide_id, image_path)
         slide_array = open_slide_array(image_path)
+        logging.info(
+            'Slide %s dimensions: width=%s, height=%s, channels=%s',
+            slide_id,
+            slide_array.shape[1],
+            slide_array.shape[0],
+            slide_array.shape[2] if slide_array.ndim == 3 else 1,
+        )
 
         resolved_annotation_format = resolve_annotation_format(
             requested_format=args.annotation_format,
@@ -638,6 +667,7 @@ if __name__ == '__main__':
             annotations_dir=annotations_dir,
             annotation_json_suffix=args.annotation_json_suffix,
         )
+        logging.info('Slide %s annotation format resolved to %s', slide_id, resolved_annotation_format)
         mask_array = load_mask(
             slide_id=slide_id,
             image_shape=slide_array.shape,
@@ -648,13 +678,32 @@ if __name__ == '__main__':
             target_labels=target_labels,
             mask_dir=mask_dir,
         )
+        logging.info('Finished rasterizing glomerulus mask for slide %s', slide_id)
         roi_mask = load_roi_mask(
             slide_id=slide_id,
             image_shape=slide_array.shape,
             anatomical_dir=anatomical_dir,
             anatomical_json_suffix=args.anatomical_json_suffix,
             roi_labels=roi_labels,
+            missing_roi_policy=args.missing_roi_policy,
         )
+        if roi_labels and args.missing_roi_policy == 'skip-slide' and roi_mask is None:
+            slide_manifest.append({
+                'slide_id': slide_id,
+                'split': split,
+                'annotation_format': resolved_annotation_format,
+                'width': int(slide_array.shape[1]),
+                'height': int(slide_array.shape[0]),
+                'positive_tiles': 0,
+                'negative_tiles_kept': 0,
+                'total_tiles_kept': 0,
+                'status': 'skipped_missing_roi',
+            })
+            del mask_array
+            del slide_array
+            continue
+        if roi_mask is not None:
+            logging.info('Finished rasterizing ROI mask for slide %s', slide_id)
 
         positive_tiles, negative_tiles = collect_tile_records(
             slide_array=slide_array,
@@ -664,6 +713,12 @@ if __name__ == '__main__':
             split=split,
             args=args,
         )
+        logging.info(
+            'Collected tile candidates for %s: %s positive, %s negative',
+            slide_id,
+            len(positive_tiles),
+            len(negative_tiles),
+        )
         selected_tiles = select_tiles(
             positive_tiles=positive_tiles,
             negative_tiles=negative_tiles,
@@ -671,6 +726,7 @@ if __name__ == '__main__':
             negative_ratio=args.negative_ratio,
             max_background_tiles=args.max_background_tiles_per_slide,
         )
+        logging.info('Selected %s tiles for slide %s', len(selected_tiles), slide_id)
         tile_rows = save_tiles(slide_array, mask_array, selected_tiles, output_dir, args.tile_size, args.downsample)
         tile_manifest.extend(tile_rows)
 
@@ -683,6 +739,7 @@ if __name__ == '__main__':
             'positive_tiles': len(positive_tiles),
             'negative_tiles_kept': sum(1 for row in tile_rows if not row['is_positive']),
             'total_tiles_kept': len(tile_rows),
+            'status': 'processed',
         })
 
         logging.info(
@@ -707,10 +764,13 @@ if __name__ == '__main__':
         'annotation_format': args.annotation_format,
         'target_labels': target_labels,
         'roi_labels': roi_labels,
+        'missing_roi_policy': args.missing_roi_policy,
         'train_tiles': sum(1 for row in tile_manifest if row.get('split') == 'train'),
         'val_tiles': sum(1 for row in tile_manifest if row.get('split') == 'val'),
         'positive_tiles': sum(int(row.get('is_positive', 0)) for row in tile_manifest),
         'negative_tiles': sum(1 for row in tile_manifest if not row.get('is_positive')),
+        'processed_slides': sum(1 for row in slide_manifest if row.get('status') == 'processed'),
+        'skipped_slides': sum(1 for row in slide_manifest if row.get('status') == 'skipped_missing_roi'),
         'tile_size': args.tile_size,
         'stride': args.stride,
         'downsample': args.downsample,

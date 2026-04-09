@@ -194,6 +194,7 @@ Why this works for your dataset:
 - `--images-dir` points to the existing directory that already contains `.tiff`, `.json`, and `-anatomical-structure.json`
 - the script automatically detects `slide_id.json` as the glomerulus annotation source
 - `--roi-labels Cortex` restricts tile generation to cortex regions using `slide_id-anatomical-structure.json`
+- if a slide does not contain `Cortex`, the default policy is now to skip that slide instead of crashing the whole run
 
 ### 5.5 Important preprocessing options
 
@@ -211,6 +212,11 @@ Why this works for your dataset:
   - anatomical labels to keep, for example `Cortex`
 - `--min-roi-coverage`
   - minimum ROI overlap required for a tile when ROI labels are used
+- `--missing-roi-policy`
+  - controls what happens if a requested ROI label is missing on a slide
+  - `skip-slide` (default): skip the slide
+  - `ignore-roi`: process the slide without ROI filtering
+  - `error`: stop immediately
 - `--min-tissue-coverage`
   - filters nearly empty white background patches
 - `--min-positive-pixels`
