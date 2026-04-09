@@ -31,6 +31,38 @@ The repository now supports:
 - TIFF and HSPN inference scripts
 - performance-oriented training options for a 4090 server
 
+## 0. Quick start
+
+If you only want the shortest path from raw HuBMAP slides to a validated checkpoint:
+
+1. update the repository to `unet_segm`
+2. generate tiles from `/root/datasets/HuBMAP/train`
+3. train with `--scale 0.5`
+4. evaluate `best.pth`
+5. use `predict_tiff.py` as the direct baseline for new slides
+
+## 0.1 Current validated baseline on your server
+
+The pipeline has already been validated on your server with the following run:
+
+- tiles: `/root/datasets/HuBMAP_tiles_v2`
+- checkpoint directory: `/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2`
+- best epoch: `13`
+- best validation Dice: `0.9292`
+- validation IoU: `0.8678`
+- validation Precision: `0.9291`
+- validation Recall: `0.9294`
+- validation Specificity: `0.9966`
+- validation Accuracy: `0.9935`
+
+The corresponding best checkpoint is:
+
+```text
+/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth
+```
+
+If you want to reproduce the exact validated baseline instead of starting a new experiment directory, use `hubmap_unet_run2` and `HuBMAP_tiles_v2` in the commands below.
+
 ## 1. Repository layout
 
 ```text
@@ -262,6 +294,7 @@ python train.py \
   --epochs 50 \
   --batch-size 2 \
   --learning-rate 1e-5 \
+  --scale 0.5 \
   --classes 2 \
   --amp \
   --optimizer adamw \
@@ -271,6 +304,7 @@ python train.py \
   --checkpoint-metric dice \
   --analysis-frequency 5 \
   --preview-frequency 5 \
+  --wandb-mode disabled \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
@@ -343,6 +377,7 @@ python train.py \
   --masks-dir /root/datasets/HuBMAP_tiles/train/masks \
   --val-images-dir /root/datasets/HuBMAP_tiles/val/images \
   --val-masks-dir /root/datasets/HuBMAP_tiles/val/masks \
+  --scale 0.5 \
   --classes 2 \
   --amp \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
@@ -360,6 +395,7 @@ python evaluate_checkpoint.py \
   --classes 2 \
   --batch-size 2 \
   --num-workers 8 \
+  --scale 0.5 \
   --amp \
   --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/eval_best
 ```
@@ -425,7 +461,7 @@ python predict_hspn_enhanced.py \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/hspn_enhanced_pred.png \
   --classes 2 \
   --scale 0.5 \
-  --threshold 0.5 \
+  --threshold 0.7 \
   --tile-size 1024
 ```
 
@@ -461,13 +497,49 @@ Recommended settings for the current HuBMAP baseline:
 
 - always use `--classes 2`
 - always use `--scale 0.5`
-- start from `--threshold 0.5`
+- use `--threshold 0.5` for `predict_tiff.py`
+- start from `--threshold 0.7` for `predict_hspn_enhanced.py`
+- use `--threshold 0.5` for `predict_hspn_stain_norm.py`
 - if `predict_hspn_enhanced.py` produces too much foreground, increase the threshold and compare `0.6`, `0.7`, and `0.8`
 
 Important note:
 
 - for the current two-class checkpoint, the HSPN scripts interpret class 1 as the glomerulus class
 - `predict_hspn_enhanced.py` now uses the positive-class probability threshold when `--classes 2`, so the threshold is meaningful for suppressing over-segmentation
+
+Example commands for the current internal slide `/root/datasets/diyingjia/202601260012.tif`:
+
+```bash
+# direct baseline
+python predict_tiff.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --input /root/datasets/diyingjia/202601260012.tif \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/202601260012_direct_v2.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5
+
+# contrast-enhanced HSPN inference
+python predict_hspn_enhanced.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --input /root/datasets/diyingjia/202601260012.tif \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/202601260012_hspn_enhanced_t07.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.7
+
+# stain-normalized HSPN inference
+python predict_hspn_stain_norm.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --input /root/datasets/diyingjia/202601260012.tif \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/202601260012_hspn_stainnorm_t05.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5
+```
 
 ## 10. End-to-end workflow for your server
 
@@ -513,12 +585,14 @@ python train.py \
   --epochs 50 \
   --batch-size 2 \
   --learning-rate 1e-5 \
+  --scale 0.5 \
   --classes 2 \
   --amp \
   --optimizer adamw \
   --num-workers 16 \
   --prefetch-factor 4 \
   --compile auto \
+  --wandb-mode disabled \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
@@ -530,6 +604,7 @@ python evaluate_checkpoint.py \
   --images-dir /root/datasets/HuBMAP_tiles/val/images \
   --masks-dir /root/datasets/HuBMAP_tiles/val/masks \
   --classes 2 \
+  --scale 0.5 \
   --amp \
   --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/eval_best
 ```
@@ -601,6 +676,22 @@ Use:
 ```bash
 --save-every-epoch
 ```
+
+### 11.7 Why `Accuracy` is high in this segmentation task
+
+This project is a pixel-level segmentation task with a strong foreground/background imbalance:
+
+- most pixels are background
+- only a small fraction of pixels belong to glomeruli
+
+Because of that, `Accuracy` and `Specificity` can become very high even when the foreground prediction is not perfect. For this reason, the most informative metrics for this project are:
+
+- Dice
+- IoU
+- Precision
+- Recall
+
+For the current validated baseline, the most important number to report is the validation Dice of `0.9292`.
 
 ## 12. Current project status
 
