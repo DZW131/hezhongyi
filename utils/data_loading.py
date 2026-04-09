@@ -1,3 +1,4 @@
+import json
 import logging
 import numpy as np
 import torch
@@ -51,8 +52,30 @@ class BasicDataset(Dataset):
             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your .jpg images there')
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
-        
-        # Scan masks to identify class values (e.g., 0 for background, 255 for glomeruli)
+
+        self.mask_values = self._load_or_create_mask_values()
+        logging.info(f'Unique mask values: {self.mask_values}')
+
+    def _mask_value_cache_path(self) -> Path:
+        return self.mask_dir / '.mask_values_cache.json'
+
+    def _load_or_create_mask_values(self):
+        cache_path = self._mask_value_cache_path()
+        if cache_path.exists():
+            try:
+                with cache_path.open('r', encoding='utf-8') as cache_file:
+                    payload = json.load(cache_file)
+
+                if (
+                    payload.get('mask_suffix') == self.mask_suffix
+                    and payload.get('num_ids') == len(self.ids)
+                    and isinstance(payload.get('mask_values'), list)
+                ):
+                    logging.info('Loaded cached mask values from %s', cache_path)
+                    return payload['mask_values']
+            except (OSError, ValueError, TypeError) as exc:
+                logging.warning('Failed to read mask value cache %s: %s', cache_path, exc)
+
         logging.info('Scanning mask files to determine unique values')
         with Pool() as p:
             unique = list(tqdm(
@@ -60,8 +83,23 @@ class BasicDataset(Dataset):
                 total=len(self.ids)
             ))
 
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        logging.info(f'Unique mask values: {self.mask_values}')
+        mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
+
+        try:
+            with cache_path.open('w', encoding='utf-8') as cache_file:
+                json.dump(
+                    {
+                        'mask_suffix': self.mask_suffix,
+                        'num_ids': len(self.ids),
+                        'mask_values': mask_values,
+                    },
+                    cache_file,
+                    indent=2,
+                )
+        except OSError as exc:
+            logging.warning('Failed to write mask value cache %s: %s', cache_path, exc)
+
+        return mask_values
 
     def __len__(self):
         return len(self.ids)

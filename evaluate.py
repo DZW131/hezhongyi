@@ -36,6 +36,7 @@ def evaluate(
     num_val_batches = len(dataloader)
     running_loss = 0.0
     preview = None
+    non_blocking = device.type == 'cuda'
     metrics = SegmentationMetricAccumulator(
         n_classes=net.n_classes,
         threshold=threshold,
@@ -46,8 +47,13 @@ def evaluate(
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
             image, mask_true = batch['image'], batch['mask']
 
-            image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            mask_true = mask_true.to(device=device, dtype=torch.long)
+            image = image.to(
+                device=device,
+                dtype=torch.float32,
+                memory_format=torch.channels_last,
+                non_blocking=non_blocking,
+            )
+            mask_true = mask_true.to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
             logits = net(image)
             loss = _compute_validation_loss(logits, mask_true, net.n_classes)

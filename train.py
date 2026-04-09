@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ try:
     import wandb
 except ImportError:
     wandb = None
+
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
@@ -28,8 +30,12 @@ from utils.visualization import save_segmentation_preview, save_training_curves
 dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
 dir_checkpoint = Path('./checkpoints/')
+
 DEFAULT_CHECKPOINT_METRIC = 'dice'
 AVAILABLE_CHECKPOINT_METRICS = ('dice', 'iou', 'precision', 'recall', 'specificity', 'accuracy')
+AVAILABLE_OPTIMIZERS = ('rmsprop', 'adamw')
+AVAILABLE_COMPILE_MODES = ('auto', 'off', 'default', 'reduce-overhead', 'max-autotune')
+AVAILABLE_MATMUL_PRECISIONS = ('highest', 'high', 'medium')
 
 
 class NullExperiment:
@@ -38,6 +44,12 @@ class NullExperiment:
 
     def finish(self):
         return None
+
+
+def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    if hasattr(model, '_orig_mod'):
+        return model._orig_mod
+    return model
 
 
 def compute_segmentation_loss(logits: torch.Tensor, true_masks: torch.Tensor, n_classes: int) -> torch.Tensor:
@@ -83,7 +95,8 @@ def init_experiment(config: Dict[str, object], mode: str):
 
 def save_model_weights(model: torch.nn.Module, mask_values, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    state_dict = model.state_dict()
+    model_to_save = unwrap_model(model)
+    state_dict = model_to_save.state_dict()
     state_dict['mask_values'] = mask_values
     torch.save(state_dict, str(output_path))
 
@@ -122,6 +135,109 @@ def determine_split_sizes(dataset_size: int, val_percent: float) -> List[int]:
     return [n_train, n_val]
 
 
+def configure_runtime(device: torch.device, enable_tf32: bool, cudnn_benchmark: bool, matmul_precision: str) -> None:
+    if hasattr(torch, 'set_float32_matmul_precision'):
+        torch.set_float32_matmul_precision(matmul_precision)
+
+    if device.type == 'cuda':
+        if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda, 'matmul'):
+            torch.backends.cuda.matmul.allow_tf32 = enable_tf32
+
+        if hasattr(torch.backends, 'cudnn'):
+            torch.backends.cudnn.allow_tf32 = enable_tf32
+            torch.backends.cudnn.benchmark = cudnn_benchmark
+
+        logging.info(
+            'CUDA performance options: tf32=%s, cudnn_benchmark=%s, matmul_precision=%s',
+            enable_tf32,
+            cudnn_benchmark,
+            matmul_precision,
+        )
+
+
+def maybe_compile_model(model: torch.nn.Module, device: torch.device, compile_mode: str) -> Tuple[torch.nn.Module, bool]:
+    if compile_mode == 'off':
+        return model, False
+
+    if not hasattr(torch, 'compile'):
+        logging.warning('torch.compile is unavailable in this PyTorch build. Continuing without compilation.')
+        return model, False
+
+    if compile_mode == 'auto':
+        if device.type != 'cuda':
+            return model, False
+        selected_mode = 'reduce-overhead'
+    else:
+        selected_mode = compile_mode
+
+    try:
+        compiled_model = torch.compile(model, mode=selected_mode)
+        logging.info('Enabled torch.compile with mode=%s', selected_mode)
+        return compiled_model, True
+    except Exception as exc:
+        logging.warning('torch.compile failed (%s). Continuing without compilation.', exc)
+        return model, False
+
+
+def create_optimizer(
+    model: torch.nn.Module,
+    optimizer_name: str,
+    learning_rate: float,
+    weight_decay: float,
+    momentum: float,
+    device: torch.device,
+    use_fused_optimizer: bool,
+):
+    optimizer_name = optimizer_name.lower()
+
+    if optimizer_name == 'adamw':
+        optimizer_kwargs = dict(lr=learning_rate, weight_decay=weight_decay)
+        if use_fused_optimizer and device.type == 'cuda':
+            try:
+                optimizer = optim.AdamW(model.parameters(), fused=True, **optimizer_kwargs)
+                logging.info('Using fused AdamW optimizer')
+                return optimizer
+            except TypeError:
+                logging.warning('Fused AdamW is unavailable in this PyTorch version. Falling back to standard AdamW.')
+
+        return optim.AdamW(model.parameters(), **optimizer_kwargs)
+
+    return optim.RMSprop(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        momentum=momentum,
+        foreach=device.type == 'cuda',
+    )
+
+
+def build_dataloader_args(
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+    persistent_workers: bool,
+    prefetch_factor: int,
+) -> Dict[str, object]:
+    loader_args = dict(
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=device.type == 'cuda',
+    )
+
+    if num_workers > 0:
+        loader_args['persistent_workers'] = persistent_workers
+        if prefetch_factor > 0:
+            loader_args['prefetch_factor'] = prefetch_factor
+
+    return loader_args
+
+
+def should_run_epoch_task(epoch: int, total_epochs: int, frequency: int) -> bool:
+    if frequency <= 0:
+        return epoch == total_epochs
+    return epoch == total_epochs or epoch % frequency == 0
+
+
 def train_model(
     model,
     device,
@@ -142,11 +258,24 @@ def train_model(
     wandb_mode: str = 'online',
     train_images_dir: Path = dir_img,
     train_masks_dir: Path = dir_mask,
-    val_images_dir: Path = None,
-    val_masks_dir: Path = None,
+    val_images_dir: Optional[Path] = None,
+    val_masks_dir: Optional[Path] = None,
+    optimizer_name: str = 'rmsprop',
+    use_fused_optimizer: bool = True,
+    compile_mode: str = 'auto',
+    enable_tf32: bool = True,
+    cudnn_benchmark: bool = True,
+    matmul_precision: str = 'high',
+    persistent_workers: bool = True,
+    prefetch_factor: int = 4,
+    val_frequency: int = 1,
+    analysis_frequency: int = 5,
+    preview_frequency: int = 5,
 ):
     if (val_images_dir is None) != (val_masks_dir is None):
         raise ValueError('Validation image and mask directories must be provided together.')
+
+    configure_runtime(device, enable_tf32=enable_tf32, cudnn_benchmark=cudnn_benchmark, matmul_precision=matmul_precision)
 
     if val_images_dir is not None and val_masks_dir is not None:
         train_set = create_dataset(train_images_dir, train_masks_dir, img_scale)
@@ -158,13 +287,28 @@ def train_model(
         n_train, n_val = determine_split_sizes(len(dataset), val_percent)
         train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
-    loader_args = dict(
+    loader_args = build_dataloader_args(
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=device.type == 'cuda',
+        device=device,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
     )
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=False, **loader_args)
+
+    optimizer = create_optimizer(
+        model=model,
+        optimizer_name=optimizer_name,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        momentum=momentum,
+        device=device,
+        use_fused_optimizer=use_fused_optimizer,
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
+    grad_scaler = torch.cuda.amp.GradScaler(enabled=amp and device.type == 'cuda')
+    train_model_for_forward, is_compiled = maybe_compile_model(model, device=device, compile_mode=compile_mode)
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir = checkpoint_dir / 'analysis'
@@ -190,22 +334,40 @@ def train_model(
             img_scale=img_scale,
             amp=amp,
             num_workers=num_workers,
+            optimizer=optimizer_name,
+            fused_optimizer=use_fused_optimizer,
+            compile_mode=compile_mode,
+            compiled=is_compiled,
+            enable_tf32=enable_tf32,
+            cudnn_benchmark=cudnn_benchmark,
+            matmul_precision=matmul_precision,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
+            val_frequency=val_frequency,
+            analysis_frequency=analysis_frequency,
+            preview_frequency=preview_frequency,
         ),
         mode=wandb_mode,
     )
 
     logging.info(
         'Starting training:\n'
-        '    Epochs:          %s\n'
-        '    Batch size:      %s\n'
-        '    Learning rate:   %s\n'
-        '    Training size:   %s\n'
-        '    Validation size: %s\n'
-        '    Checkpoints:     %s\n'
-        '    Checkpoint rule: best %s\n'
-        '    Device:          %s\n'
-        '    Images scaling:  %s\n'
-        '    Mixed Precision: %s',
+        '    Epochs:              %s\n'
+        '    Batch size:          %s\n'
+        '    Learning rate:       %s\n'
+        '    Training size:       %s\n'
+        '    Validation size:     %s\n'
+        '    Checkpoints:         %s\n'
+        '    Checkpoint rule:     best %s\n'
+        '    Device:              %s\n'
+        '    Images scaling:      %s\n'
+        '    Mixed Precision:     %s\n'
+        '    Optimizer:           %s\n'
+        '    torch.compile:       %s\n'
+        '    num_workers:         %s\n'
+        '    persistent_workers:  %s\n'
+        '    prefetch_factor:     %s\n'
+        '    val_frequency:       %s',
         epochs,
         batch_size,
         learning_rate,
@@ -216,26 +378,25 @@ def train_model(
         device.type,
         img_scale,
         amp,
+        optimizer_name,
+        is_compiled,
+        num_workers,
+        persistent_workers and num_workers > 0,
+        prefetch_factor if num_workers > 0 else 0,
+        val_frequency,
     )
-
-    optimizer = optim.RMSprop(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        momentum=momentum,
-        foreach=True
-    )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
-    grad_scaler = torch.cuda.amp.GradScaler(enabled=amp and device.type == 'cuda')
 
     best_metric_value = float('-inf')
     best_epoch = 0
     history_rows = []
     mask_values = get_dataset_mask_values(train_set)
+    non_blocking = device.type == 'cuda'
 
     try:
         for epoch in range(1, epochs + 1):
             model.train()
+            train_model_for_forward.train()
+            epoch_start = time.perf_counter()
             epoch_loss = 0.0
             seen_images = 0
 
@@ -248,11 +409,16 @@ def train_model(
                         'Please check that the images are loaded correctly.'
                     ).format(model.n_channels, images.shape[1])
 
-                    images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                    true_masks = true_masks.to(device=device, dtype=torch.long)
+                    images = images.to(
+                        device=device,
+                        dtype=torch.float32,
+                        memory_format=torch.channels_last,
+                        non_blocking=non_blocking,
+                    )
+                    true_masks = true_masks.to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
                     with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                        masks_pred = model(images)
+                        masks_pred = train_model_for_forward(images)
                         loss = compute_segmentation_loss(masks_pred, true_masks, model.n_classes)
 
                     optimizer.zero_grad(set_to_none=True)
@@ -268,13 +434,59 @@ def train_model(
                     pbar.update(batch_size_current)
                     pbar.set_postfix(loss='{:.4f}'.format(loss.item()))
 
+            epoch_seconds = time.perf_counter() - epoch_start
             train_loss = epoch_loss / max(seen_images, 1)
-            val_metrics, preview = evaluate(model, val_loader, device, amp)
-            scheduler.step(val_metrics[checkpoint_metric])
-
+            train_images_per_second = seen_images / max(epoch_seconds, 1e-6)
             learning_rate_current = optimizer.param_groups[0]['lr']
+
+            run_validation = should_run_epoch_task(epoch, epochs, val_frequency)
+            val_metrics = {}
+            preview = None
+            validation_seconds = 0.0
+
+            if run_validation:
+                validation_start = time.perf_counter()
+                val_metrics, preview = evaluate(train_model_for_forward, val_loader, device, amp)
+                validation_seconds = time.perf_counter() - validation_start
+                scheduler.step(val_metrics[checkpoint_metric])
+
+            history_row = {
+                'epoch': epoch,
+                'train_loss': train_loss,
+                'learning_rate': learning_rate_current,
+                'epoch_seconds': epoch_seconds,
+                'train_images_per_second': train_images_per_second,
+                'validation_seconds': validation_seconds,
+                'validated': int(run_validation),
+            }
+
+            if run_validation:
+                history_row['val_loss'] = float(val_metrics['loss'])
+                history_row['checkpoint_metric'] = float(val_metrics[checkpoint_metric])
+                for key, value in val_metrics.items():
+                    history_row[key] = float(value)
+            else:
+                history_row['val_loss'] = float('nan')
+                history_row['checkpoint_metric'] = float('nan')
+                for key in AVAILABLE_CHECKPOINT_METRICS:
+                    history_row[key] = float('nan')
+
+            is_best = run_validation and val_metrics[checkpoint_metric] > best_metric_value
+            history_row['is_best'] = int(is_best)
+            history_rows.append(history_row)
+            write_history_csv(history_rows, history_path)
+
+            should_update_analysis = should_run_epoch_task(epoch, epochs, analysis_frequency)
+            if should_update_analysis:
+                save_training_curves(history_rows, curves_path)
+
+            should_save_preview = (
+                run_validation and preview is not None and (
+                    is_best or should_run_epoch_task(epoch, epochs, preview_frequency)
+                )
+            )
             preview_path = None
-            if preview is not None:
+            if should_save_preview:
                 preview_path = preview_dir / 'epoch_{:03d}.png'.format(epoch)
                 save_segmentation_preview(
                     image_tensor=preview['image'],
@@ -283,23 +495,6 @@ def train_model(
                     output_path=preview_path,
                     metrics=val_metrics,
                 )
-
-            history_row = {
-                'epoch': epoch,
-                'train_loss': train_loss,
-                'val_loss': val_metrics['loss'],
-                'learning_rate': learning_rate_current,
-                'checkpoint_metric': val_metrics[checkpoint_metric],
-            }
-
-            for key, value in val_metrics.items():
-                history_row[key] = float(value)
-
-            is_best = val_metrics[checkpoint_metric] > best_metric_value
-            history_row['is_best'] = int(is_best)
-            history_rows.append(history_row)
-            write_history_csv(history_rows, history_path)
-            save_training_curves(history_rows, curves_path)
 
             if save_checkpoint:
                 save_model_weights(model, mask_values, checkpoint_dir / 'latest.pth')
@@ -313,6 +508,14 @@ def train_model(
 
                     if preview_path is not None:
                         shutil.copyfile(str(preview_path), str(best_preview_path))
+                    elif preview is not None:
+                        save_segmentation_preview(
+                            image_tensor=preview['image'],
+                            true_mask_tensor=preview['true_mask'],
+                            pred_mask_tensor=preview['pred_mask'],
+                            output_path=best_preview_path,
+                            metrics=val_metrics,
+                        )
 
                     with best_metrics_path.open('w', encoding='utf-8') as metrics_file:
                         json.dump(
@@ -325,22 +528,40 @@ def train_model(
                             indent=2,
                         )
 
-            logging.info(
-                'Epoch %s finished. train_loss=%.4f, %s%s',
-                epoch,
-                train_loss,
-                format_metrics(val_metrics),
-                ' [best]' if is_best else '',
-            )
+            if run_validation:
+                logging.info(
+                    'Epoch %s finished in %.1fs (train %.1f img/s, val %.1fs). train_loss=%.4f, %s%s',
+                    epoch,
+                    epoch_seconds,
+                    train_images_per_second,
+                    validation_seconds,
+                    train_loss,
+                    format_metrics(val_metrics),
+                    ' [best]' if is_best else '',
+                )
+            else:
+                logging.info(
+                    'Epoch %s finished in %.1fs (train %.1f img/s). train_loss=%.4f [validation skipped]',
+                    epoch,
+                    epoch_seconds,
+                    train_images_per_second,
+                    train_loss,
+                )
 
             log_payload = {
                 'epoch': epoch,
                 'train/loss': train_loss,
                 'train/learning_rate': learning_rate_current,
+                'train/epoch_seconds': epoch_seconds,
+                'train/images_per_second': train_images_per_second,
+                'val/validated': int(run_validation),
             }
-            for key, value in val_metrics.items():
-                log_payload['val/{}'.format(key)] = value
-            log_payload['val/is_best'] = int(is_best)
+
+            if run_validation:
+                log_payload['val/seconds'] = validation_seconds
+                for key, value in val_metrics.items():
+                    log_payload['val/{}'.format(key)] = value
+                log_payload['val/is_best'] = int(is_best)
 
             if preview_path is not None:
                 try:
@@ -353,6 +574,8 @@ def train_model(
 
     finally:
         experiment.finish()
+
+    save_training_curves(history_rows, curves_path)
 
     if save_checkpoint and best_epoch > 0:
         logging.info(
@@ -385,8 +608,12 @@ def get_args():
                         help='Optional directory containing validation images')
     parser.add_argument('--val-masks-dir', type=str, default='',
                         help='Optional directory containing validation masks')
-    parser.add_argument('--num-workers', type=int, default=min(8, os.cpu_count() or 1),
+    parser.add_argument('--num-workers', type=int, default=min(16, os.cpu_count() or 1),
                         help='Number of dataloader workers')
+    parser.add_argument('--prefetch-factor', type=int, default=4,
+                        help='Number of batches preloaded by each dataloader worker')
+    parser.add_argument('--disable-persistent-workers', action='store_true', default=False,
+                        help='Disable dataloader persistent workers')
     parser.add_argument('--save-every-epoch', action='store_true', default=False,
                         help='Also save a dedicated checkpoint file for every epoch')
     parser.add_argument('--checkpoint-metric', choices=AVAILABLE_CHECKPOINT_METRICS,
@@ -396,8 +623,59 @@ def get_args():
                         help='Directory used to store checkpoints and analysis artifacts')
     parser.add_argument('--wandb-mode', choices=('online', 'offline', 'disabled'), default='online',
                         help='Weights & Biases logging mode')
+    parser.add_argument('--optimizer', choices=AVAILABLE_OPTIMIZERS, default='rmsprop',
+                        help='Optimizer used for training')
+    parser.add_argument('--disable-fused-optimizer', action='store_true', default=False,
+                        help='Disable fused optimizer kernels when supported')
+    parser.add_argument('--compile', dest='compile_mode', choices=AVAILABLE_COMPILE_MODES, default='auto',
+                        help='Enable torch.compile for faster training on supported setups')
+    parser.add_argument('--disable-tf32', action='store_true', default=False,
+                        help='Disable TF32 matmul / cuDNN acceleration on Ampere+ GPUs')
+    parser.add_argument('--disable-cudnn-benchmark', action='store_true', default=False,
+                        help='Disable cuDNN benchmark autotuning')
+    parser.add_argument('--matmul-precision', choices=AVAILABLE_MATMUL_PRECISIONS, default='high',
+                        help='torch.set_float32_matmul_precision setting')
+    parser.add_argument('--val-frequency', type=int, default=1,
+                        help='Run validation every N epochs (final epoch always validates)')
+    parser.add_argument('--analysis-frequency', type=int, default=5,
+                        help='Refresh training curves every N epochs (final epoch always refreshes)')
+    parser.add_argument('--preview-frequency', type=int, default=5,
+                        help='Save validation preview images every N epochs (best and final still save)')
 
     return parser.parse_args()
+
+
+def run_training(args, model, device):
+    return train_model(
+        model=model,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.lr,
+        device=device,
+        img_scale=args.scale,
+        val_percent=args.val / 100,
+        amp=args.amp,
+        num_workers=args.num_workers,
+        save_every_epoch=args.save_every_epoch,
+        checkpoint_metric=args.checkpoint_metric,
+        checkpoint_dir=Path(args.checkpoint_dir),
+        wandb_mode=args.wandb_mode,
+        train_images_dir=Path(args.images_dir),
+        train_masks_dir=Path(args.masks_dir),
+        val_images_dir=Path(args.val_images_dir) if args.val_images_dir else None,
+        val_masks_dir=Path(args.val_masks_dir) if args.val_masks_dir else None,
+        optimizer_name=args.optimizer,
+        use_fused_optimizer=not args.disable_fused_optimizer,
+        compile_mode=args.compile_mode,
+        enable_tf32=not args.disable_tf32,
+        cudnn_benchmark=not args.disable_cudnn_benchmark,
+        matmul_precision=args.matmul_precision,
+        persistent_workers=not args.disable_persistent_workers,
+        prefetch_factor=args.prefetch_factor,
+        val_frequency=args.val_frequency,
+        analysis_frequency=args.analysis_frequency,
+        preview_frequency=args.preview_frequency,
+    )
 
 
 if __name__ == '__main__':
@@ -428,48 +706,12 @@ if __name__ == '__main__':
 
     model.to(device=device)
     try:
-        train_model(
-            model=model,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            device=device,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp,
-            num_workers=args.num_workers,
-            save_every_epoch=args.save_every_epoch,
-            checkpoint_metric=args.checkpoint_metric,
-            checkpoint_dir=Path(args.checkpoint_dir),
-            wandb_mode=args.wandb_mode,
-            train_images_dir=Path(args.images_dir),
-            train_masks_dir=Path(args.masks_dir),
-            val_images_dir=Path(args.val_images_dir) if args.val_images_dir else None,
-            val_masks_dir=Path(args.val_masks_dir) if args.val_masks_dir else None,
-        )
+        run_training(args, model, device)
     except torch.cuda.OutOfMemoryError:
         logging.error(
             'Detected OutOfMemoryError! Enabling checkpointing to reduce memory usage, but this slows down training. '
-            'Consider enabling AMP (--amp) for faster and more memory efficient training.'
+            'Consider lowering --batch-size if you want to preserve maximum throughput.'
         )
         torch.cuda.empty_cache()
         model.use_checkpointing()
-        train_model(
-            model=model,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            learning_rate=args.lr,
-            device=device,
-            img_scale=args.scale,
-            val_percent=args.val / 100,
-            amp=args.amp,
-            num_workers=args.num_workers,
-            save_every_epoch=args.save_every_epoch,
-            checkpoint_metric=args.checkpoint_metric,
-            checkpoint_dir=Path(args.checkpoint_dir),
-            wandb_mode=args.wandb_mode,
-            train_images_dir=Path(args.images_dir),
-            train_masks_dir=Path(args.masks_dir),
-            val_images_dir=Path(args.val_images_dir) if args.val_images_dir else None,
-            val_masks_dir=Path(args.val_masks_dir) if args.val_masks_dir else None,
-        )
+        run_training(args, model, device)

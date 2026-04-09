@@ -94,6 +94,11 @@ python train.py \
   --val-images-dir /data/hubmap_tiles/val/images \
   --val-masks-dir /data/hubmap_tiles/val/masks \
   --amp \
+  --num-workers 16 \
+  --prefetch-factor 4 \
+  --compile auto \
+  --analysis-frequency 5 \
+  --preview-frequency 5 \
   --checkpoint-dir /data/checkpoints/hubmap_unet
 ```
 
@@ -103,6 +108,13 @@ Training now writes:
 - `analysis/history.csv`: epoch-level metrics
 - `analysis/training_curves.png`: local training curves
 - `analysis/best_preview.png`: best validation visualization
+
+For long HuBMAP runs on a 4090 server, the training script also enables several throughput-oriented optimizations:
+- `TF32` and `cuDNN benchmark` are enabled by default on CUDA
+- `torch.compile` defaults to `auto`
+- dataloaders support `persistent_workers` and `prefetch_factor`
+- mask-value scanning is cached in the mask directory, so repeated runs start faster
+- validation, preview generation, and curve refresh now have independent frequencies so analysis overhead stays controlled
 
 
 ## Usage
