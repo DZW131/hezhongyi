@@ -121,7 +121,8 @@ def add_pythonpath_to_sys_path():
 
 
 def main(args) -> None:
-    cfg = compose(config_name=args.config)
+    hydra_overrides = list(args.hydra_override or [])
+    cfg = compose(config_name=args.config, overrides=hydra_overrides)
     if cfg.launcher.experiment_log_dir is None:
         cfg.launcher.experiment_log_dir = os.path.join(
             os.getcwd(), "sam2_logs", args.config
@@ -250,6 +251,12 @@ if __name__ == "__main__":
         required=True,
         type=str,
         help="path to config file (e.g. configs/sam2.1_training/sam2.1_hiera_b+_MOSE_finetune.yaml)",
+    )
+    parser.add_argument(
+        "--hydra-override",
+        action="append",
+        default=[],
+        help="extra Hydra override, can be passed multiple times",
     )
     parser.add_argument(
         "--use-cluster",

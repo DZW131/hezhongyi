@@ -11,8 +11,6 @@ from dataclasses import dataclass
 
 from typing import List, Optional
 
-import pandas as pd
-
 import torch
 
 from iopath.common.file_io import g_pathmgr
@@ -25,6 +23,24 @@ from training.dataset.vos_segment_loader import (
     PalettisedPNGSegmentLoader,
     SA1BSegmentLoader,
 )
+
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
+
+
+def list_frame_paths(video_frame_root):
+    frame_paths = []
+    for extension in IMAGE_EXTENSIONS:
+        frame_paths.extend(glob.glob(os.path.join(video_frame_root, f"*{extension}")))
+    return sorted(set(frame_paths))
+
+
+def resolve_single_image_path(root, video_name):
+    for extension in IMAGE_EXTENSIONS:
+        candidate = os.path.join(root, video_name + extension)
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(f"Could not find an image for {video_name} under {root}")
 
 
 @dataclass
@@ -131,7 +147,7 @@ class PNGRawDataset(VOSRawDataset):
                 video_mask_root, self.single_object_mode
             )
 
-        all_frames = sorted(glob.glob(os.path.join(video_frame_root, "*.jpg")))
+        all_frames = list_frame_paths(video_frame_root)
         if self.truncate_video > 0:
             all_frames = all_frames[: self.truncate_video]
         frames = []
@@ -169,8 +185,10 @@ class SA1BRawDataset(VOSRawDataset):
         else:
             subset = os.listdir(self.img_folder)
             subset = [
-                path.split(".")[0] for path in subset if path.endswith(".jpg")
-            ]  # remove extension
+                os.path.splitext(path)[0]
+                for path in subset
+                if os.path.splitext(path)[1] in IMAGE_EXTENSIONS
+            ]
 
         # Read and process excluded files if provided
         if excluded_videos_list_txt is not None:
@@ -190,7 +208,7 @@ class SA1BRawDataset(VOSRawDataset):
         """
         video_name = self.video_names[idx]
 
-        video_frame_path = os.path.join(self.img_folder, video_name + ".jpg")
+        video_frame_path = resolve_single_image_path(self.img_folder, video_name)
         video_mask_path = os.path.join(self.gt_folder, video_name + ".json")
 
         segment_loader = SA1BSegmentLoader(

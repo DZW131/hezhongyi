@@ -1,0 +1,19 @@
+defaults:
+  - sam2.1_hiera_b+_trop2_structural_priors
+  - _self_
+
+# @package _global_
+
+trainer:
+  model:
+    return_obj_ptr_for_loss: false
+
+  loss:
+    all:
+      weight_dict:
+        loss_struct_contrast: 0.0
+        loss_contain: 1.0
+        loss_ring: 0.5
+
+launcher:
+  experiment_log_dir: checkpoints/hierarchical_region_consistency

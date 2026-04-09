@@ -325,7 +325,7 @@ class Trainer:
         checkpoint_folder = self.checkpoint_conf.save_dir
         makedir(checkpoint_folder)
         if checkpoint_names is None:
-            checkpoint_names = ["checkpoint"]
+            checkpoint_names = ["checkpoint", "latest"]
             if (
                 self.checkpoint_conf.save_freq > 0
                 and (int(epoch) % self.checkpoint_conf.save_freq == 0)
@@ -492,6 +492,7 @@ class Trainer:
                     meter.update(
                         find_stages=outputs,
                         find_metadatas=batch.metadata,
+                        targets=targets,
                     )
 
         return ret_tuple
@@ -916,6 +917,8 @@ class Trainer:
                         checkpoint_save_keys.append(tracked_meter_key.replace("/", "_"))
 
         if len(checkpoint_save_keys) > 0:
+            if "best" not in checkpoint_save_keys:
+                checkpoint_save_keys.append("best")
             self.save_checkpoint(self.epoch + 1, checkpoint_save_keys)
 
         return out_dict

@@ -9,7 +9,6 @@ import json
 import os
 
 import numpy as np
-import pandas as pd
 import torch
 
 from PIL import Image as PILImage
@@ -133,7 +132,7 @@ class PalettisedPNGSegmentLoader:
         masks = PILImage.open(mask_path).convert("P")
         masks = np.array(masks)
 
-        object_id = pd.unique(masks.flatten())
+        object_id = np.unique(masks)
         object_id = object_id[object_id != 0]  # remove background (0)
 
         # convert into N binary segmentation masks

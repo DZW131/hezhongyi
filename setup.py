@@ -29,13 +29,18 @@ REQUIRED_PACKAGES = [
     "hydra-core>=1.3.2",
     "iopath>=0.1.10",
     "pillow>=9.4.0",
+    "fvcore>=0.1.5.post20221221",
+    "matplotlib>=3.9.1",
+    "opencv-python>=4.7.0",
+    "submitit>=1.5.1",
+    "tensorboard>=2.17.0",
+    "tensordict>=0.6.0",
+    "tifffile>=2024.8.30",
 ]
 
 EXTRA_PACKAGES = {
     "notebooks": [
-        "matplotlib>=3.9.1",
         "jupyter>=1.0.0",
-        "opencv-python>=4.7.0",
         "eva-decord>=0.6.1",
     ],
     "interactive-demo": [
@@ -53,14 +58,22 @@ EXTRA_PACKAGES = {
         "black==24.2.0",
         "usort==1.0.2",
         "ufmt==2.0.0b2",
-        "fvcore>=0.1.5.post20221221",
-        "pandas>=2.2.2",
         "scikit-image>=0.24.0",
-        "tensorboard>=2.17.0",
         "pycocotools>=2.0.8",
-        "tensordict>=0.6.0",
-        "opencv-python>=4.7.0",
-        "submitit>=1.5.1",
+    ],
+    "hubmap": [],
+    "training": [],
+    "full": [
+        "jupyter>=1.0.0",
+        "eva-decord>=0.6.1",
+        "Flask>=3.0.3",
+        "Flask-Cors>=5.0.0",
+        "av>=13.0.0",
+        "dataclasses-json>=0.6.7",
+        "gunicorn>=23.0.0",
+        "imagesize>=1.4.1",
+        "pycocotools>=2.0.8",
+        "strawberry-graphql>=0.243.0",
     ],
 }
 

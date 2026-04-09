@@ -345,11 +345,47 @@ def load_state_dict_into_model(
         strict: raise if the state_dict has missing state keys
         ignore_missing_keys: unix pattern of keys to ignore
     """
-    # Apply kernels
     if checkpoint_kernels is not None:
         for f in checkpoint_kernels:
             state_dict = f(state_dict=state_dict)
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+
+    remapped_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith("sam_mask_decoder2"):
+            remapped_state_dict[
+                key.replace("sam_mask_decoder2", "sam_mask_decoders.1", 1)
+            ] = value
+        elif key.startswith("sam_mask_decoder."):
+            remapped_state_dict[
+                key.replace("sam_mask_decoder.", "sam_mask_decoders.0.", 1)
+            ] = value
+        else:
+            remapped_state_dict[key] = value
+
+    model_state_dict = model.state_dict()
+    filtered_state_dict = {}
+    mismatched_keys = []
+    for key, value in remapped_state_dict.items():
+        if key in model_state_dict and tuple(value.shape) != tuple(model_state_dict[key].shape):
+            mismatched_keys.append((key, tuple(value.shape), tuple(model_state_dict[key].shape)))
+            continue
+        filtered_state_dict[key] = value
+
+    if mismatched_keys:
+        mismatch_summary = ", ".join(
+            f"{key} (ckpt: {ckpt_shape}, model: {model_shape})"
+            for key, ckpt_shape, model_shape in mismatched_keys
+        )
+        logging.warning(
+            "Skipping checkpoint keys with mismatched shapes: %s", mismatch_summary
+        )
+
+    missing_keys, unexpected_keys = model.load_state_dict(
+        filtered_state_dict, strict=False
+    )
+    missing_keys = list(
+        dict.fromkeys(list(missing_keys) + [key for key, _, _ in mismatched_keys])
+    )
 
     check_load_state_dict_errors(
         missing_keys,
