@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from torchvision import transforms
 
 from utils.data_loading import BasicDataset
 from unet import UNet
