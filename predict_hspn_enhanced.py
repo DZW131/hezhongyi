@@ -11,7 +11,7 @@ from tqdm import tqdm
 from unet import UNet
 from utils.data_loading import BasicDataset
 
-def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
+def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
     """
     Predicts a mask for a large TIFF image using a sliding window approach 
     with Contrast Stretching preprocessing to handle domain shift (pale staining).
@@ -65,11 +65,7 @@ def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5
                 # Convert to PIL Image to utilize standard preprocessing pipeline
                 tile_pil = Image.fromarray(tile)
                 
-                # Preprocess for U-Net (Rescaling to 1.0)
-                #img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 1.0, is_mask=False))
-               
-                #img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 0.5, is_mask=False))
-                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 2.0, is_mask=False))
+                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, scale_factor, is_mask=False))
                 img_tensor = img_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
 
                 with torch.no_grad():
@@ -96,11 +92,12 @@ def predict_hspn_tiles(net, tiff_path, device, tile_size=1024, out_threshold=0.5
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict HSPN masks from large TIFFs with Contrast Enhancement')
-    parser.add_argument('--model', '-m', default='checkpoints/checkpoint_epoch19.pth', help='Path to model checkpoint')
+    parser.add_argument('--model', '-m', default='checkpoints/best.pth', help='Path to model checkpoint')
     parser.add_argument('--input', '-i', nargs='+', required=True, help='Paths to input .tiff files')
     parser.add_argument('--output', '-o', nargs='+', help='Custom output filenames')
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Sliding window tile size')
     parser.add_argument('--threshold', type=float, default=0.5, help='Probability threshold for mask generation')
+    parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of target classes')
     return parser.parse_args()
 
@@ -127,7 +124,14 @@ if __name__ == '__main__':
     for i, file_path in enumerate(input_files):
         logging.info(f'Processing image: {file_path}...')
         # Execute prediction with built-in contrast stretching
-        result_mask = predict_hspn_tiles(net, file_path, device, tile_size=args.tile_size, out_threshold=args.threshold)
+        result_mask = predict_hspn_tiles(
+            net,
+            file_path,
+            device,
+            tile_size=args.tile_size,
+            out_threshold=args.threshold,
+            scale_factor=args.scale,
+        )
         
         save_path = output_files[i]
         # For binary segmentation, rescale 0-1 to 0-255 for visualization

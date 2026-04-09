@@ -107,7 +107,7 @@ def predict_hspn_with_stain_norm(net, tiff_path, device, tile_size=1024, out_thr
 
 def get_args():
     parser = argparse.ArgumentParser(description='Inference with Reinhard Stain Normalization for HSPN data')
-    parser.add_argument('--model', '-m', default='checkpoints/checkpoint_epoch19.pth', help='Path to weights')
+    parser.add_argument('--model', '-m', default='checkpoints/best.pth', help='Path to weights')
     parser.add_argument('--input', '-i', nargs='+', required=True, help='Input TIFF file path')
     parser.add_argument('--output', '-o', nargs='+', help='Output filename')
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Tile size')

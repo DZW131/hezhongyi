@@ -84,7 +84,7 @@ def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from large TIFF images')
-    parser.add_argument('--model', '-m', default='checkpoints/checkpoint_epoch13.pth', help='Model path')
+    parser.add_argument('--model', '-m', default='checkpoints/best.pth', help='Model path')
     parser.add_argument('--input', '-i', nargs='+', required=True, help='Paths to input .tiff files')
     parser.add_argument('--output', '-o', nargs='+', help='Output filenames')
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Size of tiles for processing')

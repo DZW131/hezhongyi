@@ -71,6 +71,39 @@ This model was trained from scratch with 5k images and scored a [Dice coefficien
 
 It can be easily used for multiclass segmentation, portrait segmentation, medical segmentation, ...
 
+## HuBMAP workflow
+
+This repository is also adapted for HuBMAP kidney / glomeruli segmentation workflows where the raw WSI data is stored outside the Git repository.
+
+1. Tile HuBMAP TIFF slides into train / val patches:
+```bash
+python scripts/prepare_hubmap_tiles.py \
+  --images-dir /data/hubmap/train \
+  --annotations-csv /data/hubmap/train.csv \
+  --output-dir /data/hubmap_tiles \
+  --tile-size 1024 \
+  --stride 1024 \
+  --val-ratio 0.2
+```
+
+2. Train directly from external patch directories:
+```bash
+python train.py \
+  --images-dir /data/hubmap_tiles/train/images \
+  --masks-dir /data/hubmap_tiles/train/masks \
+  --val-images-dir /data/hubmap_tiles/val/images \
+  --val-masks-dir /data/hubmap_tiles/val/masks \
+  --amp \
+  --checkpoint-dir /data/checkpoints/hubmap_unet
+```
+
+Training now writes:
+- `best.pth`: best checkpoint according to the selected validation metric
+- `latest.pth`: most recent checkpoint
+- `analysis/history.csv`: epoch-level metrics
+- `analysis/training_curves.png`: local training curves
+- `analysis/best_preview.png`: best validation visualization
+
 
 ## Usage
 **Note : Use Python 3.6 or newer**
