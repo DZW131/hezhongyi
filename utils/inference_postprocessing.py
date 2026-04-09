@@ -9,6 +9,9 @@ except ImportError:
     ndimage = None
 
 
+_SCIPY_WARNING_EMITTED = False
+
+
 def estimate_tissue_mask(tile: np.ndarray, white_threshold: float = 230.0) -> np.ndarray:
     array = np.asarray(tile)
     if array.ndim == 2:
@@ -16,6 +19,16 @@ def estimate_tissue_mask(tile: np.ndarray, white_threshold: float = 230.0) -> np
     else:
         grayscale = array.astype(np.float32).mean(axis=2)
     return grayscale < white_threshold
+
+
+def align_binary_mask_shape(mask: np.ndarray, target_shape) -> np.ndarray:
+    array = (np.asarray(mask) > 0).astype(np.uint8)
+    target_h, target_w = target_shape[:2]
+    aligned = np.zeros((target_h, target_w), dtype=np.uint8)
+    copy_h = min(target_h, array.shape[0])
+    copy_w = min(target_w, array.shape[1])
+    aligned[:copy_h, :copy_w] = array[:copy_h, :copy_w]
+    return aligned
 
 
 def apply_binary_postprocessing(
@@ -28,16 +41,20 @@ def apply_binary_postprocessing(
     output = (np.asarray(mask) > 0).astype(np.uint8)
 
     if tissue_mask is not None:
-        output = output * (np.asarray(tissue_mask) > 0).astype(np.uint8)
+        tissue_mask_aligned = align_binary_mask_shape(tissue_mask, output.shape)
+        output = output * tissue_mask_aligned
 
     if min_component_area <= 0 and max_component_area <= 0 and max_component_extent <= 0:
         return output
 
     if ndimage is None:
-        logging.warning(
-            'scipy is not available, so connected-component filtering was skipped. '
-            'Install scipy if you want to use min/max component filtering.'
-        )
+        global _SCIPY_WARNING_EMITTED
+        if not _SCIPY_WARNING_EMITTED:
+            logging.warning(
+                'scipy is not available, so connected-component filtering was skipped. '
+                'Install scipy if you want to use min/max component filtering.'
+            )
+            _SCIPY_WARNING_EMITTED = True
         return output
 
     labeled, num_components = ndimage.label(output)

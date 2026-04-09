@@ -502,6 +502,7 @@ Recommended settings for the current HuBMAP baseline:
 - use `--threshold 0.5` for `predict_hspn_stain_norm.py`
 - if `predict_hspn_enhanced.py` produces too much foreground, increase the threshold and compare `0.6`, `0.7`, and `0.8`
 - if HSPN predictions still contain large block-like false positives, enable tissue masking and connected-component filtering
+- install `scipy` before using connected-component filtering, for example `pip install -r requirements.txt`
 
 Important note:
 
