@@ -22,6 +22,7 @@ except ImportError:
 
 from evaluate import evaluate
 from unet import UNet
+from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from utils.segmentation_metrics import format_metrics
@@ -699,7 +700,7 @@ if __name__ == '__main__':
     )
 
     if args.load:
-        state_dict = torch.load(args.load, map_location=device)
+        state_dict = load_torch_state(args.load, map_location=device)
         state_dict.pop('mask_values', None)
         model.load_state_dict(state_dict)
         logging.info(f'Model loaded from {args.load}')

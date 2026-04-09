@@ -9,6 +9,7 @@ import tifffile
 from tqdm import tqdm
 
 from unet import UNet
+from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
 
 def color_transfer_reinhard(source_tile):
@@ -123,7 +124,7 @@ if __name__ == '__main__':
     net = UNet(n_channels=3, n_classes=args.classes)
     
     logging.info(f'Loading checkpoint: {args.model}')
-    state_dict = torch.load(args.model, map_location=device)
+    state_dict = load_torch_state(args.model, map_location=device)
     if 'mask_values' in state_dict:
         state_dict.pop('mask_values')
     net.load_state_dict(state_dict)

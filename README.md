@@ -408,8 +408,11 @@ python predict_tiff.py \
   --input /root/datasets/HuBMAP/test/2ec3f1bb9.tiff \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/output_2ec3f1bb9.png \
   --tile-size 1024 \
+  --scale 0.5 \
   --classes 2
 ```
+
+Use the same `--scale` value that was used during training. For the current HuBMAP baseline in this repository, that value is `0.5`.
 
 ### 9.3 HSPN inference with contrast enhancement
 
@@ -508,6 +511,7 @@ python predict_tiff.py \
   --input /root/datasets/HuBMAP/test/2ec3f1bb9.tiff \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/output_2ec3f1bb9.png \
   --tile-size 1024 \
+  --scale 0.5 \
   --classes 2
 ```
 

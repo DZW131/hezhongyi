@@ -9,9 +9,10 @@ import tifffile
 from tqdm import tqdm
 
 from unet import UNet
+from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
 
-def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
+def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5, scale_factor=1.0):
     """
     Predicts a mask for a large TIFF image using a sliding window approach.
     """
@@ -58,7 +59,7 @@ def predict_tiff(net, tiff_path, device, tile_size=1024, out_threshold=0.5):
                 tile_pil = Image.fromarray(tile)
                 
                 # Preprocessing and inference
-                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, 1.0, is_mask=False))
+                img_tensor = torch.from_numpy(BasicDataset.preprocess(None, tile_pil, scale_factor, is_mask=False))
                 img_tensor = img_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
 
                 with torch.no_grad():
@@ -88,6 +89,7 @@ def get_args():
     parser.add_argument('--input', '-i', nargs='+', required=True, help='Paths to input .tiff files')
     parser.add_argument('--output', '-o', nargs='+', help='Output filenames')
     parser.add_argument('--tile-size', '-t', type=int, default=1024, help='Size of tiles for processing')
+    parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--threshold', type=float, default=0.5, help='Mask threshold')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
     return parser.parse_args()
@@ -102,7 +104,7 @@ if __name__ == '__main__':
     logging.info(f'Loading model: {args.model}')
     logging.info(f'Using device: {device}')
     
-    state_dict = torch.load(args.model, map_location=device)
+    state_dict = load_torch_state(args.model, map_location=device)
     # Remove metadata if present in state_dict
     if 'mask_values' in state_dict:
         state_dict.pop('mask_values')
@@ -119,7 +121,14 @@ if __name__ == '__main__':
         logging.info(f'Processing file: {filename}...')
         
         # Perform tile-based prediction
-        mask = predict_tiff(net, filename, device, tile_size=args.tile_size, out_threshold=args.threshold)
+        mask = predict_tiff(
+            net,
+            filename,
+            device,
+            tile_size=args.tile_size,
+            out_threshold=args.threshold,
+            scale_factor=args.scale,
+        )
         
         # Save the resulting mask
         out_name = out_files[i]

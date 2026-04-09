@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from evaluate import evaluate
 from train import create_dataset
 from unet import UNet
+from utils.checkpoint_io import load_torch_state
 from utils.segmentation_metrics import format_metrics
 from utils.visualization import save_segmentation_preview
 
@@ -46,7 +47,7 @@ if __name__ == '__main__':
     )
 
     model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
-    state_dict = torch.load(args.model, map_location=device)
+    state_dict = load_torch_state(args.model, map_location=device)
     state_dict.pop('mask_values', None)
     model.load_state_dict(state_dict)
     model.to(device=device)

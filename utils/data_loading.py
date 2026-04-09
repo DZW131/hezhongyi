@@ -11,13 +11,15 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from utils.checkpoint_io import load_torch_state
+
 
 def load_image(filename):
     ext = splitext(filename)[1].lower()
     if ext == '.npy':
         return Image.fromarray(np.load(filename))
     elif ext in ['.pt', '.pth']:
-        return Image.fromarray(torch.load(filename).numpy())
+        return Image.fromarray(load_torch_state(filename).numpy())
     else:
         # Support for .jpg and .png via PIL
         return Image.open(filename)
