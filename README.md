@@ -195,6 +195,7 @@ Why this works for your dataset:
 - the script automatically detects `slide_id.json` as the glomerulus annotation source
 - `--roi-labels Cortex` restricts tile generation to cortex regions using `slide_id-anatomical-structure.json`
 - if a slide does not contain `Cortex`, the default policy is now to skip that slide instead of crashing the whole run
+- TIFF slides with extra singleton dimensions or `CHW` channel order are normalized automatically before tiling
 
 ### 5.5 Important preprocessing options
 

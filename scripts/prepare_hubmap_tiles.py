@@ -181,6 +181,73 @@ def find_json_path(base_dir: Path, slide_id: str, suffix: str) -> Optional[Path]
     return None
 
 
+def infer_channel_axis(shape: Sequence[int]) -> Optional[int]:
+    if len(shape) < 3:
+        return None
+
+    explicit_axes = [idx for idx, size in enumerate(shape) if size in (1, 3, 4)]
+    if explicit_axes:
+        if shape[-1] in (1, 3, 4):
+            return len(shape) - 1
+        if shape[0] in (1, 3, 4):
+            return 0
+        return explicit_axes[0]
+
+    ranked_axes = sorted(range(len(shape)), key=lambda idx: shape[idx])
+    smallest_axis = ranked_axes[0]
+    second_smallest_axis = ranked_axes[1]
+    if shape[smallest_axis] <= 16 or shape[smallest_axis] * 8 < shape[second_smallest_axis]:
+        return smallest_axis
+    return None
+
+
+def normalize_slide_array(slide: np.ndarray) -> np.ndarray:
+    array = np.asarray(slide)
+    raw_shape = tuple(int(size) for size in array.shape)
+    array = np.squeeze(array)
+
+    if array.ndim == 0:
+        array = array.reshape((1, 1))
+
+    while array.ndim > 3:
+        channel_axis = infer_channel_axis(array.shape)
+        spatial_axes = set(sorted(range(array.ndim), key=lambda idx: array.shape[idx])[-2:])
+        removable_axes = [
+            idx for idx in range(array.ndim)
+            if idx not in spatial_axes and idx != channel_axis
+        ]
+        if not removable_axes:
+            removable_axes = [
+                idx for idx in range(array.ndim)
+                if idx != channel_axis
+            ]
+        axis_to_slice = min(removable_axes, key=lambda idx: array.shape[idx])
+        array = np.take(array, indices=0, axis=axis_to_slice)
+        array = np.squeeze(array)
+
+    if array.ndim == 1:
+        array = array[np.newaxis, :, np.newaxis]
+    elif array.ndim == 2:
+        array = array[..., np.newaxis]
+    elif array.ndim == 3:
+        channel_axis = infer_channel_axis(array.shape)
+        if channel_axis is None:
+            logging.warning(
+                'Could not confidently infer channel axis for slide array with shape %s. '
+                'Assuming the last axis is the channel axis.',
+                raw_shape,
+            )
+        elif channel_axis != 2:
+            array = np.moveaxis(array, channel_axis, -1)
+    else:
+        raise ValueError('Unsupported slide array shape {}'.format(raw_shape))
+
+    normalized_shape = tuple(int(size) for size in array.shape)
+    if normalized_shape != raw_shape:
+        logging.info('Normalized slide array shape from %s to %s', raw_shape, normalized_shape)
+    return array
+
+
 def open_slide_array(image_path: Path) -> np.ndarray:
     require_tifffile()
     try:
@@ -188,12 +255,7 @@ def open_slide_array(image_path: Path) -> np.ndarray:
     except Exception:
         slide = tifffile.imread(str(image_path))
 
-    if slide.ndim == 2:
-        slide = slide[..., np.newaxis]
-    elif slide.ndim == 3 and slide.shape[0] in (3, 4) and slide.shape[-1] not in (3, 4):
-        slide = np.moveaxis(slide, 0, -1)
-
-    return slide
+    return normalize_slide_array(slide)
 
 
 def read_geojson_features(json_path: Path) -> List[Dict[str, object]]:
