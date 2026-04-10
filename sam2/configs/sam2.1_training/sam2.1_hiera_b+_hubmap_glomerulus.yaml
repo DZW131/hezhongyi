@@ -5,6 +5,8 @@ scratch:
   train_batch_size: 1
   val_batch_size: 1
   num_train_workers: 12
+  prefetch_factor: 4
+  persistent_workers: true
   num_frames: 1
   max_num_objects: 6
   base_lr: 3.0e-6
@@ -227,6 +229,8 @@ trainer:
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
       drop_last: True
+      persistent_workers: ${scratch.persistent_workers}
+      prefetch_factor: ${scratch.prefetch_factor}
       collate_fn:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
@@ -256,6 +260,8 @@ trainer:
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
       drop_last: False
+      persistent_workers: ${scratch.persistent_workers}
+      prefetch_factor: ${scratch.prefetch_factor}
       collate_fn:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true

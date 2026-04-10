@@ -309,6 +309,8 @@ cat /root/datasets/HuBMAP_tiles_v2_sam2/manifests/summary.json
 - `num_correction_pt_per_frame = 0`
 - 验证阶段的点采样使用 `uniform`
 
+当前默认 `num_epochs = 30`。
+
 最后这一点很重要：
 
 - 当前版本不是交互式多轮纠错训练
@@ -342,6 +344,28 @@ python scripts/train_hubmap_sam2.py \
   --num-nodes 1 \
   --num-workers 4
 ```
+
+如果你更关心训练时长，而不是先跑一版偏保守配置，推荐直接使用 4090 快速预设：
+
+```bash
+python scripts/train_hubmap_sam2.py \
+  --profile fast_4090 \
+  --dataset-root /root/datasets/HuBMAP_tiles_v2_sam2 \
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_base_plus.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus_fast \
+  --num-gpus 1 \
+  --num-nodes 1
+```
+
+这个快速预设当前会自动应用：
+
+- `resolution = 768`
+- `num_epochs = 20`
+- `val_epoch_freq = 4`
+- `num_workers = 8`
+- `prefetch_factor = 4`
+- `persistent_workers = true`
+- `compile_image_encoder = true`
 
 可选加速参数：
 
@@ -579,6 +603,9 @@ python scripts/predict_hubmap_sam2.py \
 - 它不是简单前向二值分割，而是带 prompt 编码的分割框架
 - 验证阶段还会进入 prompt 采样和 predictor 式流程
 - 当前虽然已经把任务收敛为单帧，并关闭了 correction clicks，但模型主体仍然更复杂
+- U-Net 那条路线常用 `scale=0.5`，等价于在 `1024 -> 512` 分辨率上训练；而当前 SAM2 标准配置是 `896`
+- 按像素量估算，`896 x 896` 大约是 `512 x 512` 的 `3.06` 倍
+- U-Net 常见 batch size 还能做到 `2`，而当前 SAM2 B+ 基线默认是 batch size `1`
 
 所以：
 
@@ -656,6 +683,24 @@ git pull origin sam2_segm
 - 可与 U-Net 公平对比
 
 多轮纠错点不是不能做，而是被放到了后续增强阶段。
+
+### 17.4 当前已经做了哪些训练提速优化
+
+和原始 SAM2 训练骨架相比，当前项目已经做了这些提速或减负处理：
+
+- 不再从原始 WSI 反复慢速解码，直接复用已有 tile 数据集
+- 将任务收敛为 `num_frames = 1`
+- 使用 `num_maskmem = 0`
+- 冻结 image encoder
+- 关闭多轮 correction points
+- 训练和验证都使用轻量 prompt 机制
+- 启用 `bfloat16 AMP`
+- 启用 `TF32`
+- 启用 `cudnn_benchmark`
+- 加入 `persistent_workers`
+- 加入 `prefetch_factor`
+- 提供 `compile_image_encoder` 开关
+- 提供 `fast_4090` 快速训练预设
 
 ---
 

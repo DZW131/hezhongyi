@@ -80,6 +80,8 @@ class TorchTrainMixedDataset:
         worker_init_fn: Optional[Callable] = None,
         phases_per_epoch: int = 1,
         dataset_prob: Optional[List[float]] = None,
+        persistent_workers: bool = False,
+        prefetch_factor: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -103,6 +105,8 @@ class TorchTrainMixedDataset:
         self.drop_last = drop_last
         self.collate_fn = collate_fn
         self.worker_init_fn = worker_init_fn
+        self.persistent_workers = persistent_workers
+        self.prefetch_factor = prefetch_factor
         assert len(self.datasets) > 0
         for dataset in self.datasets:
             assert not isinstance(dataset, IterableDataset), "Not supported"
@@ -167,14 +171,17 @@ class TorchTrainMixedDataset:
             sampler.set_epoch(epoch)
 
             batch_sampler = BatchSampler(sampler, batch_size, drop_last=self.drop_last)
-            dataloaders.append(
-                DataLoader(
-                    dataset,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    batch_sampler=batch_sampler,
-                    collate_fn=self.collate_fn,
-                    worker_init_fn=self.worker_init_fn,
-                )
-            )
+            dataloader_kwargs = {
+                "dataset": dataset,
+                "num_workers": self.num_workers,
+                "pin_memory": self.pin_memory,
+                "batch_sampler": batch_sampler,
+                "collate_fn": self.collate_fn,
+                "worker_init_fn": self.worker_init_fn,
+            }
+            if self.num_workers > 0:
+                dataloader_kwargs["persistent_workers"] = self.persistent_workers
+                if self.prefetch_factor is not None:
+                    dataloader_kwargs["prefetch_factor"] = self.prefetch_factor
+            dataloaders.append(DataLoader(**dataloader_kwargs))
         return MixedDataLoader(dataloaders, self.dataset_prob)
