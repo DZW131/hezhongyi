@@ -62,6 +62,32 @@ def load_finetuned_model(
     return build_sam2(config_path, checkpoint_path, device=torch_device, mode="eval")
 
 
+def select_best_prediction(masks, scores) -> Tuple[np.ndarray, float]:
+    """Normalize predictor outputs and pick the best-scoring mask."""
+    if isinstance(masks, list):
+        score_groups = scores if isinstance(scores, list) else [scores] * len(masks)
+        candidates: List[Tuple[np.ndarray, float]] = []
+        for mask_group, score_group in zip(masks, score_groups):
+            mask_array = np.asarray(mask_group)
+            score_array = np.asarray(score_group)
+            if mask_array.ndim == 2:
+                mask_array = mask_array[None, ...]
+            if score_array.ndim == 0:
+                score_array = score_array[None]
+            for idx in range(min(mask_array.shape[0], score_array.shape[0])):
+                candidates.append((mask_array[idx], float(score_array[idx])))
+        if not candidates:
+            raise ValueError("Predictor returned an empty mask list.")
+        return max(candidates, key=lambda item: item[1])
+
+    mask_array = np.asarray(masks)
+    score_array = np.asarray(scores)
+    if mask_array.ndim == 2:
+        return mask_array, float(score_array if score_array.ndim == 0 else score_array[0])
+    best_index = int(np.argmax(score_array))
+    return mask_array[best_index], float(score_array[best_index])
+
+
 def predict_instance_masks(
     predictor: SAM2ImagePredictor,
     image: np.ndarray,
@@ -90,9 +116,7 @@ def predict_instance_masks(
             return_logits=False,
             normalize_coords=True,
         )
-        best_index = 0 if masks.ndim == 2 else int(np.argmax(scores))
-        best_mask = masks if masks.ndim == 2 else masks[best_index]
-        best_score = float(scores[0] if np.ndim(scores) == 0 else scores[best_index])
+        best_mask, best_score = select_best_prediction(masks, scores)
         predictions.append((best_mask.astype(bool), best_score, prompt))
     predictor.reset_predictor()
     return predictions
