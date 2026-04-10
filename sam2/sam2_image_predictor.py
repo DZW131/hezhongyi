@@ -121,7 +121,7 @@ class SAM2ImagePredictor:
             vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
 
         feats = [
-            feat.permute(1, 2, 0).view(1, -1, *feat_size)
+            feat.permute(1, 2, 0).reshape(1, -1, *feat_size)
             for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
         ][::-1]
         self._features = {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
@@ -164,7 +164,7 @@ class SAM2ImagePredictor:
             vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
 
         feats = [
-            feat.permute(1, 2, 0).view(batch_size, -1, *feat_size)
+            feat.permute(1, 2, 0).reshape(batch_size, -1, *feat_size)
             for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
         ][::-1]
         self._features = {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
