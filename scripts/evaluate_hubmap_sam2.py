@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -40,6 +41,8 @@ def parse_args():
     parser.add_argument("--preview-count", type=int, default=0, help="Number of preview images to save.")
     parser.add_argument("--save-per-sample-csv", action="store_true", help="Save per-sample metrics as a CSV file.")
     parser.add_argument("--log-interval", type=int, default=50, help="How often to log progress. Set to 0 to only print the final summary.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable the tqdm progress bar.")
+    parser.add_argument("--verbose-predictor-logs", action="store_true", help="Show per-image SAM2 predictor embedding logs.")
     parser.add_argument("--min-mask-area", type=int, default=16, help="Minimum predicted mask area kept in the final instance map.")
     parser.add_argument("--points-per-side", type=int, default=24, help="AMG grid density.")
     parser.add_argument("--pred-iou-thresh", type=float, default=0.75, help="AMG predicted IoU threshold.")
@@ -94,6 +97,8 @@ def resolve_prior_mask(prior_mask_dir: Path, sample_id: str) -> Path:
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    if not args.verbose_predictor_logs:
+        logging.getLogger("sam2.sam2_image_predictor").setLevel(logging.WARNING)
     from hubmap_sam2.inference import (
         SAM2ImagePredictor,
         anns_to_instance_map,
@@ -127,7 +132,14 @@ def main():
     instance_fn = 0.0
 
     preview_dir = output_dir / "previews"
-    for index, sample in enumerate(samples):
+    progress = tqdm(
+        samples,
+        desc=f"Evaluating {args.split}",
+        unit="tile",
+        disable=args.no_progress,
+        dynamic_ncols=True,
+    )
+    for index, sample in enumerate(progress):
         image, true_instance_map, metadata = load_prepared_sample(sample)
         prompt_points = []
 
@@ -185,6 +197,17 @@ def main():
             **semantic_metrics.compute(),
             **instance_metrics,
         }
+        running_metrics = semantic_accumulator.compute()
+        if not args.no_progress and (
+            (index + 1) == 1
+            or (index + 1) == len(samples)
+            or (index + 1) % 10 == 0
+        ):
+            progress.set_postfix(
+                dice=f"{running_metrics['dice']:.4f}",
+                iou=f"{running_metrics['iou']:.4f}",
+                refresh=False,
+            )
         if args.save_per_sample_csv:
             sample_rows.append(row)
 
@@ -198,7 +221,7 @@ def main():
                 prompt_points=prompt_points,
             )
 
-        if args.log_interval > 0 and (
+        if args.log_interval > 0 and args.no_progress and (
             (index + 1) == 1
             or (index + 1) == len(samples)
             or (index + 1) % args.log_interval == 0
@@ -212,6 +235,7 @@ def main():
                 row["iou"],
                 row["instance_f1"],
             )
+    progress.close()
 
     metrics = semantic_accumulator.compute()
     instance_precision = instance_tp / (instance_tp + instance_fp) if (instance_tp + instance_fp) else 0.0
