@@ -37,7 +37,9 @@ def parse_args():
     parser.add_argument("--prompt-mode", type=str, default="point_box", choices=("point", "box", "point_box"), help="Prompt type used in prior-mask mode.")
     parser.add_argument("--min-component-area", type=int, default=32, help="Minimum connected-component area kept when generating prompts from coarse masks.")
     parser.add_argument("--max-samples", type=int, default=0, help="Optional sample limit for quick checks.")
-    parser.add_argument("--preview-count", type=int, default=8, help="Number of preview images to save.")
+    parser.add_argument("--preview-count", type=int, default=0, help="Number of preview images to save.")
+    parser.add_argument("--save-per-sample-csv", action="store_true", help="Save per-sample metrics as a CSV file.")
+    parser.add_argument("--log-interval", type=int, default=50, help="How often to log progress. Set to 0 to only print the final summary.")
     parser.add_argument("--min-mask-area", type=int, default=16, help="Minimum predicted mask area kept in the final instance map.")
     parser.add_argument("--points-per-side", type=int, default=24, help="AMG grid density.")
     parser.add_argument("--pred-iou-thresh", type=float, default=0.75, help="AMG predicted IoU threshold.")
@@ -183,7 +185,8 @@ def main():
             **semantic_metrics.compute(),
             **instance_metrics,
         }
-        sample_rows.append(row)
+        if args.save_per_sample_csv:
+            sample_rows.append(row)
 
         if index < args.preview_count:
             save_prediction_preview(
@@ -195,15 +198,20 @@ def main():
                 prompt_points=prompt_points,
             )
 
-        logging.info(
-            "[%s/%s] %s dice=%.4f iou=%.4f instance_f1=%.4f",
-            index + 1,
-            len(samples),
-            sample.sample_id,
-            row["dice"],
-            row["iou"],
-            row["instance_f1"],
-        )
+        if args.log_interval > 0 and (
+            (index + 1) == 1
+            or (index + 1) == len(samples)
+            or (index + 1) % args.log_interval == 0
+        ):
+            logging.info(
+                "[%s/%s] %s dice=%.4f iou=%.4f instance_f1=%.4f",
+                index + 1,
+                len(samples),
+                sample.sample_id,
+                row["dice"],
+                row["iou"],
+                row["instance_f1"],
+            )
 
     metrics = semantic_accumulator.compute()
     instance_precision = instance_tp / (instance_tp + instance_fp) if (instance_tp + instance_fp) else 0.0
@@ -215,7 +223,7 @@ def main():
     )
     metrics.update(
         {
-            "sample_count": len(sample_rows),
+            "sample_count": len(samples),
             "instance_tp": instance_tp,
             "instance_fp": instance_fp,
             "instance_fn": instance_fn,
@@ -237,9 +245,19 @@ def main():
 
     with (output_dir / "metrics.json").open("w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2)
-    write_csv(sample_rows, output_dir / "per_sample_metrics.csv")
+    if args.save_per_sample_csv:
+        write_csv(sample_rows, output_dir / "per_sample_metrics.csv")
 
     logging.info("Saved evaluation summary to %s", output_dir / "metrics.json")
+    logging.info(
+        "Final metrics | Dice=%.4f | IoU=%.4f | Precision=%.4f | Recall=%.4f | Specificity=%.4f | Accuracy=%.4f",
+        metrics["Dice"],
+        metrics["IoU"],
+        metrics["Precision"],
+        metrics["Recall"],
+        metrics["Specificity"],
+        metrics["Accuracy"],
+    )
 
 
 if __name__ == "__main__":
