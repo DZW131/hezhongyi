@@ -17,6 +17,8 @@ from hubmap_sam2.dataset import (
     estimate_tissue_coverage,
     extract_tile,
     find_existing_path,
+    generate_candidate_tiles_for_boxes,
+    generate_candidate_tiles_for_records,
     generate_positions,
     load_polygon_records,
     open_slide_array,
@@ -24,7 +26,7 @@ from hubmap_sam2.dataset import (
     require_tifffile,
     save_palette_png,
 )
-from hubmap_sam2.prompts import prompts_from_binary_mask
+from hubmap_sam2.prompts import component_boxes_from_binary_mask, prompts_from_binary_mask
 
 try:
     import tifffile
@@ -33,6 +35,7 @@ except ImportError:  # pragma: no cover - optional at import time
 
 
 PROMPT_SOURCES = ("amg", "mask")
+TILE_SELECTIONS = ("auto", "grid", "roi", "prior-mask")
 
 
 def parse_args():
@@ -53,6 +56,8 @@ def parse_args():
     parser.add_argument("--roi-labels", nargs="*", default=[], help="Optional ROI labels to keep during wsi inference.")
     parser.add_argument("--tile-size", type=int, default=1024, help="Patch size for wsi inference.")
     parser.add_argument("--stride", type=int, default=1024, help="Sliding stride for wsi inference.")
+    parser.add_argument("--tile-selection", type=str, default="auto", choices=TILE_SELECTIONS, help="How to choose WSI tiles. 'auto' uses prior-mask boxes for mask prompting, ROI boxes when ROI labels are given, and otherwise falls back to full-grid scanning.")
+    parser.add_argument("--tile-context-radius", type=int, default=0, help="Optional expansion radius in grid steps around selected WSI tiles.")
     parser.add_argument("--border-ignore", type=int, default=64, help="Ignore predictions too close to inner patch borders during wsi stitching.")
     parser.add_argument("--white-threshold", type=float, default=230.0, help="Threshold used for tissue filtering in wsi mode.")
     parser.add_argument("--min-tissue-coverage", type=float, default=0.05, help="Minimum tissue coverage required for a patch.")
@@ -115,6 +120,44 @@ def save_tile_outputs(output_dir: Path, image: np.ndarray, instance_map: np.ndar
     Image.fromarray(ensure_uint8_rgb(image)).save(output_dir / "image.png")
     save_palette_png(instance_map, output_dir / "instance_map.png")
     Image.fromarray((instance_map > 0).astype(np.uint8) * 255).save(output_dir / "binary_mask.png")
+
+
+def resolve_wsi_tile_positions(args, full_w: int, full_h: int, roi_records, prior_mask_full):
+    if args.tile_selection == "grid":
+        x_positions = generate_positions(full_w, args.tile_size, args.stride)
+        y_positions = generate_positions(full_h, args.tile_size, args.stride)
+        return [(x, y) for y in y_positions for x in x_positions]
+
+    if args.tile_selection in {"auto", "prior-mask"} and prior_mask_full is not None:
+        component_boxes = component_boxes_from_binary_mask(
+            prior_mask_full,
+            min_component_area=args.min_component_area,
+        )
+        if component_boxes:
+            return generate_candidate_tiles_for_boxes(
+                component_boxes,
+                width=full_w,
+                height=full_h,
+                tile_size=args.tile_size,
+                stride=args.stride,
+                expand_radius=args.tile_context_radius,
+            )
+        if args.tile_selection == "prior-mask":
+            return []
+
+    if args.tile_selection in {"auto", "roi"} and roi_records:
+        return generate_candidate_tiles_for_records(
+            roi_records,
+            width=full_w,
+            height=full_h,
+            tile_size=args.tile_size,
+            stride=args.stride,
+            expand_radius=args.tile_context_radius,
+        )
+
+    x_positions = generate_positions(full_w, args.tile_size, args.stride)
+    y_positions = generate_positions(full_h, args.tile_size, args.stride)
+    return [(x, y) for y in y_positions for x in x_positions]
 
 
 def run_tile_inference(args, model):
@@ -219,49 +262,52 @@ def run_wsi_inference(args, model):
     if args.anatomical_json and args.roi_labels:
         roi_records = load_polygon_records(Path(args.anatomical_json), target_labels=args.roi_labels)
 
-    x_positions = generate_positions(full_w, args.tile_size, args.stride)
-    y_positions = generate_positions(full_h, args.tile_size, args.stride)
+    tile_positions = resolve_wsi_tile_positions(args, full_w, full_h, roi_records, prior_mask_full)
+    logging.info("WSI inference will evaluate %s candidate tiles", len(tile_positions))
 
-    for y in y_positions:
-        for x in x_positions:
-            tile_bbox = (x, y, x + args.tile_size, y + args.tile_size)
-            image_tile, actual_hw = extract_tile(slide_array, x, y, args.tile_size)
-            if estimate_tissue_coverage(image_tile, args.white_threshold) < args.min_tissue_coverage:
+    for x, y in tile_positions:
+        tile_bbox = (x, y, x + args.tile_size, y + args.tile_size)
+        image_tile, actual_hw = extract_tile(slide_array, x, y, args.tile_size)
+        if estimate_tissue_coverage(image_tile, args.white_threshold) < args.min_tissue_coverage:
+            continue
+
+        if roi_records:
+            candidate_roi_records = [record for record in roi_records if bboxes_intersect(record.bbox, tile_bbox)]
+            roi_mask = rasterize_records_to_mask(candidate_roi_records, tile_bbox, args.tile_size)
+            if float((roi_mask > 0).mean()) < args.min_roi_coverage:
                 continue
 
-            if roi_records:
-                candidate_roi_records = [record for record in roi_records if bboxes_intersect(record.bbox, tile_bbox)]
-                roi_mask = rasterize_records_to_mask(candidate_roi_records, tile_bbox, args.tile_size)
-                if float((roi_mask > 0).mean()) < args.min_roi_coverage:
-                    continue
+        patch_h, patch_w = actual_hw
+        valid_shape = (patch_h, patch_w)
 
-            patch_h, patch_w = actual_hw
-            valid_shape = (patch_h, patch_w)
+        if args.prompt_source == "amg":
+            anns = generator.generate(image_tile)
+            local_instance_map = anns_to_instance_map(anns, image_tile.shape[:2], min_mask_area=args.min_mask_area)
+        else:
+            prior_tile = prior_mask_full[y : y + patch_h, x : x + patch_w]
+            if int((prior_tile > 0).sum()) == 0:
+                continue
+            padded_prior = np.zeros((args.tile_size, args.tile_size), dtype=prior_tile.dtype)
+            padded_prior[:patch_h, :patch_w] = prior_tile
+            prompts = prompts_from_binary_mask(padded_prior, min_component_area=args.min_component_area)
+            if not prompts:
+                continue
+            predictions = predict_instance_masks(
+                predictor,
+                image_tile,
+                prompts,
+                prompt_mode=args.prompt_mode,
+                multimask_output=False,
+            )
+            local_instance_map = predictions_to_instance_map(predictions, image_tile.shape[:2], min_mask_area=args.min_mask_area)
 
-            if args.prompt_source == "amg":
-                anns = generator.generate(image_tile)
-                local_instance_map = anns_to_instance_map(anns, image_tile.shape[:2], min_mask_area=args.min_mask_area)
-            else:
-                prior_tile = prior_mask_full[y : y + patch_h, x : x + patch_w]
-                padded_prior = np.zeros((args.tile_size, args.tile_size), dtype=prior_tile.dtype)
-                padded_prior[:patch_h, :patch_w] = prior_tile
-                prompts = prompts_from_binary_mask(padded_prior, min_component_area=args.min_component_area)
-                predictions = predict_instance_masks(
-                    predictor,
-                    image_tile,
-                    prompts,
-                    prompt_mode=args.prompt_mode,
-                    multimask_output=False,
-                )
-                local_instance_map = predictions_to_instance_map(predictions, image_tile.shape[:2], min_mask_area=args.min_mask_area)
-
-            local_ids = [int(value) for value in np.unique(local_instance_map[:patch_h, :patch_w]) if int(value) > 0]
-            for local_id in local_ids:
-                local_mask = local_instance_map[:patch_h, :patch_w] == local_id
-                if not keep_instance(local_mask, x, y, valid_shape, (full_h, full_w), args.border_ignore):
-                    continue
-                global_instance_map[y : y + patch_h, x : x + patch_w][local_mask] = next_instance_id
-                next_instance_id += 1
+        local_ids = [int(value) for value in np.unique(local_instance_map[:patch_h, :patch_w]) if int(value) > 0]
+        for local_id in local_ids:
+            local_mask = local_instance_map[:patch_h, :patch_w] == local_id
+            if not keep_instance(local_mask, x, y, valid_shape, (full_h, full_w), args.border_ignore):
+                continue
+            global_instance_map[y : y + patch_h, x : x + patch_w][local_mask] = next_instance_id
+            next_instance_id += 1
 
     tifffile.imwrite(str(output_dir / "instance_map.tiff"), global_instance_map.astype(np.uint32))
     tifffile.imwrite(str(output_dir / "binary_mask.tiff"), (global_instance_map > 0).astype(np.uint8))

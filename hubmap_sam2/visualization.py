@@ -83,7 +83,7 @@ def save_training_curves(history_rows, output_path: Path) -> None:
     axes[0].set_xlabel("Epoch")
     axes[0].legend()
 
-    for key in ("val_dice", "val_iou", "val_precision", "val_recall"):
+    for key in ("val_dice", "val_iou", "val_precision", "val_recall", "val_specificity", "val_accuracy"):
         values = [row.get(key) for row in history_rows]
         if any(value is not None for value in values):
             axes[1].plot(epochs, values, label=key)
@@ -96,4 +96,3 @@ def save_training_curves(history_rows, output_path: Path) -> None:
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-

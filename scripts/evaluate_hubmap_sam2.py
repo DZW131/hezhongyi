@@ -26,7 +26,7 @@ def parse_args():
         description="Evaluate a HuBMAP fine-tuned SAM2 checkpoint on the prepared tile dataset.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--dataset-dir", type=str, required=True, help="Prepared dataset root created by prepare_hubmap_sam2_dataset.py.")
+    parser.add_argument("--dataset-dir", type=str, required=True, help="Prepared dataset root created by prepare_hubmap_sam2_from_tiles.py.")
     parser.add_argument("--split", type=str, default="val", choices=("train", "val"), help="Dataset split to evaluate.")
     parser.add_argument("--config", type=str, required=True, help="SAM2 training config used to instantiate the model.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Checkpoint to evaluate.")
@@ -225,6 +225,13 @@ def main():
             "mode": args.mode,
             "checkpoint": args.checkpoint,
             "config": args.config,
+            "validation_loss": None,
+            "Dice": metrics.get("dice", 0.0),
+            "IoU": metrics.get("iou", 0.0),
+            "Precision": metrics.get("precision", 0.0),
+            "Recall": metrics.get("recall", 0.0),
+            "Specificity": metrics.get("specificity", 0.0),
+            "Accuracy": metrics.get("accuracy", 0.0),
         }
     )
 

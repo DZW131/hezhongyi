@@ -113,6 +113,36 @@ def prompts_from_binary_mask(
     return prompts
 
 
+def component_boxes_from_binary_mask(
+    binary_mask: np.ndarray,
+    min_component_area: int = 32,
+) -> List[Tuple[float, float, float, float]]:
+    mask = (binary_mask > 0).astype(np.uint8)
+    if mask.max() == 0:
+        return []
+
+    if cv2 is not None:
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        boxes: List[Tuple[float, float, float, float]] = []
+        for label in range(1, int(num_labels)):
+            x, y, width, height, area = stats[label]
+            if int(area) < min_component_area:
+                continue
+            boxes.append((float(x), float(y), float(x + width), float(y + height)))
+        return boxes
+
+    _, labels = _connected_components_with_fallback(mask)
+    boxes = []
+    for object_id in [int(value) for value in np.unique(labels) if int(value) > 0]:
+        component_mask = labels == object_id
+        if int(component_mask.sum()) < min_component_area:
+            continue
+        box = mask_to_box(component_mask)
+        if box is not None:
+            boxes.append(box)
+    return boxes
+
+
 def prompts_from_metadata(
     metadata: Dict[str, object],
     fallback_instance_map: Optional[np.ndarray] = None,
@@ -138,4 +168,3 @@ def prompts_from_metadata(
     if prompts or fallback_instance_map is None:
         return prompts
     return instance_prompts_from_instance_map(fallback_instance_map)
-

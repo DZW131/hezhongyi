@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import csv
 import json
 import logging
+import os
 import random
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover - optional at import time
+    cv2 = None
 
 try:
     import tifffile
@@ -381,6 +389,104 @@ def generate_positions(length: int, tile_size: int, stride: int) -> List[int]:
     return positions
 
 
+def _intersecting_grid_positions(
+    positions: Sequence[int],
+    bbox_start: float,
+    bbox_end: float,
+    tile_size: int,
+) -> List[int]:
+    positions_list = positions if isinstance(positions, list) else list(positions)
+    min_origin = int(np.floor(bbox_start - tile_size + 1))
+    max_origin = int(np.ceil(bbox_end) - 1)
+    lo = bisect_left(positions_list, min_origin)
+    hi = bisect_right(positions_list, max_origin)
+    return [int(value) for value in positions_list[lo:hi]]
+
+
+def expand_tile_candidates(
+    candidates: Sequence[Tuple[int, int]],
+    width: int,
+    height: int,
+    tile_size: int,
+    stride: int,
+    radius: int = 0,
+) -> List[Tuple[int, int]]:
+    if radius <= 0 or not candidates:
+        return sorted({(int(x), int(y)) for x, y in candidates}, key=lambda item: (item[1], item[0]))
+
+    x_positions = generate_positions(width, tile_size, stride)
+    y_positions = generate_positions(height, tile_size, stride)
+    x_to_index = {int(value): index for index, value in enumerate(x_positions)}
+    y_to_index = {int(value): index for index, value in enumerate(y_positions)}
+
+    expanded = set()
+    for x, y in candidates:
+        x_index = x_to_index[int(x)]
+        y_index = y_to_index[int(y)]
+        for dx in range(-radius, radius + 1):
+            nx_index = x_index + dx
+            if nx_index < 0 or nx_index >= len(x_positions):
+                continue
+            for dy in range(-radius, radius + 1):
+                ny_index = y_index + dy
+                if ny_index < 0 or ny_index >= len(y_positions):
+                    continue
+                expanded.add((int(x_positions[nx_index]), int(y_positions[ny_index])))
+
+    return sorted(expanded, key=lambda item: (item[1], item[0]))
+
+
+def generate_candidate_tiles_for_boxes(
+    boxes: Sequence[Tuple[float, float, float, float]],
+    width: int,
+    height: int,
+    tile_size: int,
+    stride: int,
+    expand_radius: int = 0,
+) -> List[Tuple[int, int]]:
+    if not boxes:
+        return []
+
+    x_positions = generate_positions(width, tile_size, stride)
+    y_positions = generate_positions(height, tile_size, stride)
+    candidates = set()
+
+    for bbox in boxes:
+        x0, y0, x1, y1 = bbox
+        candidate_x = _intersecting_grid_positions(x_positions, x0, x1, tile_size)
+        candidate_y = _intersecting_grid_positions(y_positions, y0, y1, tile_size)
+        for x in candidate_x:
+            for y in candidate_y:
+                candidates.add((int(x), int(y)))
+
+    return expand_tile_candidates(
+        sorted(candidates, key=lambda item: (item[1], item[0])),
+        width=width,
+        height=height,
+        tile_size=tile_size,
+        stride=stride,
+        radius=expand_radius,
+    )
+
+
+def generate_candidate_tiles_for_records(
+    records: Sequence[PolygonRecord],
+    width: int,
+    height: int,
+    tile_size: int,
+    stride: int,
+    expand_radius: int = 0,
+) -> List[Tuple[int, int]]:
+    return generate_candidate_tiles_for_boxes(
+        [record.bbox for record in records],
+        width=width,
+        height=height,
+        tile_size=tile_size,
+        stride=stride,
+        expand_radius=expand_radius,
+    )
+
+
 def pad_image_tile(tile: np.ndarray, tile_size: int) -> Tuple[np.ndarray, Tuple[int, int]]:
     tile = ensure_uint8_rgb(tile)
     height, width = tile.shape[:2]
@@ -454,6 +560,147 @@ def save_palette_png(mask: np.ndarray, output_path: Path) -> None:
 
 def save_image_png(image: np.ndarray, output_path: Path) -> None:
     Image.fromarray(ensure_uint8_rgb(image)).save(output_path)
+
+
+def load_mask_array(mask_path: Path) -> np.ndarray:
+    mask = np.asarray(Image.open(mask_path))
+    if mask.ndim == 3:
+        mask = mask[..., 0]
+    return mask
+
+
+def _connected_components(mask: np.ndarray) -> Tuple[int, np.ndarray]:
+    binary_mask = (mask > 0).astype(np.uint8)
+    if binary_mask.max() == 0:
+        return 1, np.zeros_like(binary_mask, dtype=np.int32)
+
+    if cv2 is not None:
+        num_labels, labels = cv2.connectedComponents(binary_mask, connectivity=8)
+        return int(num_labels), labels.astype(np.int32)
+
+    height, width = binary_mask.shape
+    labels = np.zeros((height, width), dtype=np.int32)
+    current_label = 0
+    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for y in range(height):
+        for x in range(width):
+            if binary_mask[y, x] == 0 or labels[y, x] != 0:
+                continue
+            current_label += 1
+            queue = [(y, x)]
+            labels[y, x] = current_label
+            while queue:
+                cy, cx = queue.pop()
+                for dy, dx in neighbors:
+                    ny, nx = cy + dy, cx + dx
+                    if ny < 0 or nx < 0 or ny >= height or nx >= width:
+                        continue
+                    if binary_mask[ny, nx] == 0 or labels[ny, nx] != 0:
+                        continue
+                    labels[ny, nx] = current_label
+                    queue.append((ny, nx))
+    return current_label + 1, labels
+
+
+def remap_mask_to_instance_map(
+    mask: np.ndarray,
+    mask_format: str = "auto",
+    min_instance_area: int = 32,
+    max_instances: int = 254,
+) -> Tuple[np.ndarray, str]:
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3:
+        mask_array = mask_array[..., 0]
+
+    unique_values = [int(value) for value in np.unique(mask_array) if int(value) > 0]
+    if not unique_values:
+        return np.zeros(mask_array.shape, dtype=np.uint16), "empty"
+
+    inferred_format = mask_format
+    if mask_format == "auto":
+        inferred_format = "binary" if len(unique_values) <= 1 else "instance"
+
+    instance_map = np.zeros(mask_array.shape, dtype=np.uint16)
+    next_instance_id = 1
+
+    if inferred_format == "binary":
+        _, labels = _connected_components(mask_array > 0)
+        component_ids = [int(value) for value in np.unique(labels) if int(value) > 0]
+        for component_id in component_ids:
+            component_mask = labels == component_id
+            if int(component_mask.sum()) < min_instance_area:
+                continue
+            if next_instance_id > max_instances:
+                break
+            instance_map[component_mask] = next_instance_id
+            next_instance_id += 1
+        return instance_map, "binary"
+
+    for value in unique_values:
+        _, labels = _connected_components(mask_array == value)
+        component_ids = [int(component_id) for component_id in np.unique(labels) if int(component_id) > 0]
+        for component_id in component_ids:
+            component_mask = labels == component_id
+            if int(component_mask.sum()) < min_instance_area:
+                continue
+            if next_instance_id > max_instances:
+                break
+            instance_map[component_mask] = next_instance_id
+            next_instance_id += 1
+        if next_instance_id > max_instances:
+            break
+    return instance_map, "instance"
+
+
+def load_mask_value_cache(mask_dir: Path) -> Optional[Dict[str, object]]:
+    cache_path = mask_dir / ".mask_values_cache.json"
+    if not cache_path.exists():
+        return None
+    with cache_path.open("r", encoding="utf-8") as handle:
+        cache = json.load(handle)
+    return cache if isinstance(cache, dict) else None
+
+
+def infer_mask_format_from_cache(mask_dir: Path) -> Optional[str]:
+    cache = load_mask_value_cache(mask_dir)
+    if cache is None:
+        return None
+    values = [int(value) for value in cache.get("mask_values", [])]
+    non_zero_values = [value for value in values if value > 0]
+    if not non_zero_values:
+        return "binary"
+    return "binary" if len(non_zero_values) <= 1 else "instance"
+
+
+def link_or_copy_file(source_path: Path, target_path: Path, mode: str = "auto") -> str:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists() or target_path.is_symlink():
+        target_path.unlink()
+
+    modes = [mode]
+    if mode == "auto":
+        modes = ["hardlink", "copy"]
+
+    last_error = None
+    for current_mode in modes:
+        try:
+            if current_mode == "hardlink":
+                os.link(source_path, target_path)
+            elif current_mode == "symlink":
+                os.symlink(source_path, target_path)
+            elif current_mode == "copy":
+                shutil.copy2(source_path, target_path)
+            else:
+                raise ValueError(f"Unsupported link mode: {current_mode}")
+            return current_mode
+        except OSError as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Could not materialize {source_path} to {target_path}")
 
 
 def assign_slide_splits(

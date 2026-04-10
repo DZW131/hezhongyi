@@ -1,21 +1,21 @@
 # @package _global_
 
 scratch:
-  resolution: 1024
-  train_batch_size: 2
+  resolution: 896
+  train_batch_size: 1
   val_batch_size: 1
-  num_train_workers: 8
+  num_train_workers: 12
   num_frames: 1
-  max_num_objects: 8
-  base_lr: 5.0e-6
-  vision_lr: 3.0e-6
+  max_num_objects: 6
+  base_lr: 3.0e-6
+  vision_lr: 1.5e-6
   phases_per_epoch: 1
-  num_epochs: 40
+  num_epochs: 30
 
 paths:
-  dataset_root: /root/datasets/HuBMAP_sam2
-  init_checkpoint: /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt
-  experiment_dir: /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
+  dataset_root: /root/datasets/HuBMAP_tiles_v2_sam2
+  init_checkpoint: /root/sam2_segm/checkpoints/sam2.1_hiera_base_plus.pt
+  experiment_dir: /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus
 
 dataset:
   train_img_folder: ${paths.dataset_root}/train/JPEGImages
@@ -70,7 +70,7 @@ trainer:
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   accelerator: cuda
   seed_value: 123
-  val_epoch_freq: 1
+  val_epoch_freq: 2
 
   model:
     _target_: training.model.sam2.SAM2Train
@@ -80,11 +80,9 @@ trainer:
       scalp: 1
       trunk:
         _target_: sam2.modeling.backbones.hieradet.Hiera
-        embed_dim: 96
-        num_heads: 1
-        stages: [1, 2, 7, 2]
-        global_att_blocks: [5, 7, 9]
-        window_pos_embed_bkg_spatial_size: [7, 7]
+        embed_dim: 112
+        num_heads: 2
+        drop_path_rate: 0.1
       neck:
         _target_: sam2.modeling.backbones.image_encoder.FpnNeck
         position_encoding:
@@ -94,7 +92,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [768, 384, 192, 96]
+        backbone_channel_list: [896, 448, 224, 112]
         fpn_top_down_levels: [2, 3]
         fpn_interp_model: nearest
 
@@ -156,7 +154,7 @@ trainer:
           use_dwconv: True
         num_layers: 2
 
-    num_maskmem: 7
+    num_maskmem: 0
     image_size: ${scratch.resolution}
     sigmoid_scale_for_mem_enc: 20.0
     sigmoid_bias_for_mem_enc: -10.0
@@ -164,7 +162,7 @@ trainer:
     directly_add_no_mem_embed: true
     no_obj_embed_spatial: true
     use_high_res_features_in_sam: true
-    multimask_output_in_sam: true
+    multimask_output_in_sam: false
     iou_prediction_use_sigmoid: True
     use_obj_ptrs_in_encoder: true
     add_tpos_enc_to_obj_ptrs: true
@@ -184,7 +182,7 @@ trainer:
 
     prob_to_use_pt_input_for_train: 1.0
     prob_to_use_pt_input_for_eval: 1.0
-    prob_to_use_box_input_for_train: 0.25
+    prob_to_use_box_input_for_train: 0.15
     prob_to_use_box_input_for_eval: 0.0
     prob_to_sample_from_gt_for_train: 1.0
     num_frames_to_correct_for_train: 1
@@ -330,6 +328,12 @@ trainer:
     backend: nccl
     find_unused_parameters: True
 
+  cuda:
+    allow_tf32: True
+    matmul_allow_tf32: True
+    cudnn_allow_tf32: True
+    cudnn_benchmark: True
+
   logging:
     tensorboard_writer:
       _target_: training.utils.logger.make_tensorboard_logger
@@ -337,8 +341,8 @@ trainer:
       flush_secs: 120
       should_log: True
     log_dir: ${launcher.experiment_log_dir}/logs
-    log_freq: 10
-    log_scalar_frequency: 20
+    log_freq: 50
+    log_scalar_frequency: 100
 
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
@@ -365,8 +369,8 @@ submitit:
   partition: null
   account: null
   qos: null
-  cpus_per_task: 8
+  cpus_per_task: 12
   use_cluster: false
   timeout_hour: 24
-  name: hubmap_glomerulus_sam2
+  name: hubmap_glomerulus_sam2_bplus
   port_range: [10000, 65000]
