@@ -10,6 +10,7 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 from hubmap_sam2.prompts import PromptRecord, instance_prompts_from_instance_map, prompts_from_binary_mask
+from training.utils.train_utils import register_omegaconf_resolvers
 
 
 def resolve_device(device: Optional[str] = None) -> torch.device:
@@ -25,6 +26,11 @@ def load_finetuned_model(
     checkpoint_path: str,
     device: Optional[str] = None,
 ) -> torch.nn.Module:
+    try:
+        register_omegaconf_resolvers()
+    except Exception:
+        # Resolvers may already be registered in the current process.
+        pass
     torch_device = resolve_device(device)
     return build_sam2(config_path, checkpoint_path, device=torch_device, mode="eval")
 
