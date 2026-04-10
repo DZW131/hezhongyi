@@ -1,13 +1,51 @@
-# HuBMAP Glomerulus SAM2 Engineering Pipeline
+# HuBMAP Glomerulus SAM2 Pipeline
 
-This repository is now a HuBMAP kidney glomerulus segmentation project built on top of SAM2 and adapted for a Linux server workflow.
+This repository is a SAM2-based HuBMAP kidney glomerulus segmentation project designed for Linux server training and inference.
 
 It is intended to be the second technical route alongside your U-Net project:
 
-- `hezhongyi-unet_segm`: semantic coarse segmentation / candidate generation
+- `hezhongyi-unet_segm`: coarse semantic segmentation / candidate generation
 - `hezhongyi-sam2_segm`: promptable instance refinement with SAM2
 
-The current codebase has been reworked around the HuBMAP data layout you already use on the server:
+The repository has been adapted from the original SAM2 training stack into a HuBMAP-focused engineering workflow:
+
+- raw HuBMAP slides stay outside the repository
+- the repository provides dataset preparation scripts
+- train/val split is done by slide
+- SAM2 is trained as a single-frame promptable model with `num_frames=1`
+- validation, checkpointing, summaries, and inference scripts are included
+- the hybrid route `U-Net coarse mask -> SAM2 refinement` is supported
+
+## 1. Current scope
+
+This repository now supports:
+
+- complete in-repo `sam2/` package and training config tree
+- HuBMAP TIFF + polygon JSON preprocessing
+- slide-level train/val split
+- optional anatomical ROI filtering from `*-anatomical-structure.json`
+- instance-preserving tile generation
+- automatic prompt generation from GT instances
+- single-frame SAM2 fine-tuning
+- validation metrics: Dice, IoU, Precision, Recall, Specificity, Accuracy
+- instance-level matching metrics for evaluation
+- `best` / `latest` checkpoint saving
+- training history export and curve plotting
+- tile inference
+- whole-slide patch-based inference
+- two no-GT inference routes:
+  - pure SAM2 automatic mask generation (`amg`)
+  - coarse-mask-driven refinement (`mask`)
+
+## 2. Recommended deployment layout
+
+You can clone this repository anywhere on the server. In the examples below we use:
+
+```text
+/root/sam2_segm
+```
+
+Raw HuBMAP data stays outside the repository:
 
 ```text
 /root/datasets/HuBMAP/train/
@@ -20,70 +58,58 @@ The current codebase has been reworked around the HuBMAP data layout you already
   ...
 ```
 
-You do not need to move raw slides into the repository.
+Recommended generated dataset root:
 
-## 1. What this project now does
+```text
+/root/datasets/HuBMAP_sam2
+```
 
-This repository now supports:
+Recommended training output root:
 
-- full in-repo `sam2/` package and training configs
-- HuBMAP TIFF + polygon JSON preprocessing
-- slide-level train/val split
-- optional anatomical ROI filtering from `*-anatomical-structure.json`
-- instance-preserving tile generation for SAM2
-- single-frame SAM2 training with `num_frames=1`
-- automatic prompt generation from glomerulus instances
-- validation metrics: Dice, IoU, Precision, Recall, Specificity, Accuracy
-- instance-level matching metrics for evaluation
-- best/latest checkpoint saving
-- training history export and curve plotting
-- tile inference
-- whole-slide patch-based inference
-- two automatic inference routes:
-  - pure SAM2 automatic mask generation (`amg`)
-  - coarse-mask-driven SAM2 refinement (`mask`), suitable for U-Net -> SAM2 chaining
+```text
+/root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
+```
 
-## 2. Key design choices
+## 3. Core design choices
 
-### 2.1 Single-frame SAM2
+### 3.1 Single-frame SAM2
 
-This project treats each image tile as a one-frame video:
+This project treats each tile as a one-frame video:
 
 - `num_frames = 1`
-- SAM2 training logic is reused instead of replacing the whole framework
-- the model remains a promptable segmentation model rather than a plain semantic segmenter
+- the original SAM2 training framework is reused
+- the model remains a promptable segmentation model, not a plain binary segmenter
 
-### 2.2 Instance-level dataset, not merged binary-only training masks
+### 3.2 Instance-level training targets
 
-HuBMAP glomerulus polygons are preserved as tile-local instance IDs during preprocessing:
+HuBMAP glomerulus polygons are preserved as tile-local instance IDs:
 
-- each glomerulus becomes one instance in the saved annotation PNG
-- metadata stores per-instance prompt hints
-- train/val split is done by slide, not by tile
+- each visible glomerulus becomes one instance in the training annotation PNG
+- prompt metadata is stored per instance
+- slide-level splitting prevents train/val leakage
 
-### 2.3 Automatic prompt design
+### 3.3 Automatic prompt generation
 
-Training and evaluation use prompt generation derived from instance masks:
+Training and oracle evaluation prompts are derived automatically from GT masks:
 
-- positive point: distance-transform peak inside each instance
-- optional box: tight bounding box of the same instance
-- training config mixes point prompts with a smaller amount of box prompts
+- point prompt: distance-transform interior point
+- box prompt: tight bounding box of the same instance
 
-This is more stable than using a plain polygon centroid because the sampled point is guaranteed to stay deep inside the visible mask.
+This is more robust than using a naive centroid because the point is more likely to remain inside irregular masks.
 
-### 2.4 Recommended production route
+### 3.4 Recommended production path
 
-For real no-GT inference, the recommended route is:
+For real no-GT inference, the recommended path is:
 
-1. U-Net produces a coarse binary glomerulus candidate mask.
-2. SAM2 converts connected components in that coarse mask into prompts.
-3. SAM2 refines them into instance masks.
+1. U-Net predicts a coarse binary glomerulus mask.
+2. Connected components in that mask are converted into prompts.
+3. SAM2 refines them into cleaner instance masks.
 
-This hybrid route is implemented in the inference scripts through `--prompt-source mask`.
+This route is implemented in the inference scripts through `--prompt-source mask`.
 
-Pure SAM2 automatic mask generation is still available through `--prompt-source amg`, but it should be treated as a baseline rather than the default production strategy.
+Pure `amg` inference is also available, but should be treated as a baseline rather than the default production route.
 
-## 3. Repository layout
+## 4. Repository layout
 
 ```text
 .
@@ -99,9 +125,10 @@ Pure SAM2 automatic mask generation is still available through `--prompt-source 
 |   |-- training_summary.py
 |   `-- visualization.py
 |-- sam2/
-|   `-- configs/
-|       |-- sam2.1/
-|       `-- sam2.1_training/
+|   |-- configs/
+|   |   |-- sam2.1/
+|   |   `-- sam2.1_training/
+|   `-- ...
 |-- scripts/
 |   |-- prepare_hubmap_sam2_dataset.py
 |   |-- train_hubmap_sam2.py
@@ -111,100 +138,137 @@ Pure SAM2 automatic mask generation is still available through `--prompt-source 
 `-- training/
 ```
 
-## 4. Repository completeness
+## 5. Environment setup
 
-The original workspace was not a complete trainable SAM2 repository. It contained the training skeleton but was missing the top-level `sam2/` package and config tree required by:
+### 5.1 Recommended conda environment
 
-- `setup.py`
-- Hydra model construction
-- image predictor / automatic mask generator
-- checkpoint loading
+Recommended environment:
 
-This repository now includes the missing `sam2/` package and a HuBMAP-specific training config:
+- environment name: `sam2_segm`
+- Python: `3.10`
+- PyTorch: `2.5.1`
+- torchvision: `0.20.1`
 
-- `configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml`
-
-So the current tree is now self-contained for training and inference.
-
-## 5. Recommended server environment
-
-Recommended setup:
-
-- OS: Linux
-- Python: 3.10+
-- GPU: CUDA-capable GPU
-- PyTorch: 2.5.1+ with a CUDA build matching the server driver
-
-Example installation:
+Create the environment:
 
 ```bash
-cd /root/hezhongyi-sam2_segm
+conda create -n sam2_segm python=3.10 pip -y
+conda activate sam2_segm
+```
 
-conda activate sam2_kidney
+### 5.2 Install PyTorch
 
-# Install a CUDA-compatible torch build first according to your server.
-# Then install the project itself.
+Install a CUDA build that matches your server. If your driver supports CUDA 12.4:
+
+```bash
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia -y
+```
+
+If your server only supports CUDA 12.1:
+
+```bash
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+```
+
+You can confirm the driver side with:
+
+```bash
+nvidia-smi
+```
+
+### 5.3 Install TIFF decoding dependencies
+
+HuBMAP TIFF files are often JPEG-compressed TIFFs. These require `imagecodecs`.
+
+Install it explicitly:
+
+```bash
+conda install -c conda-forge imagecodecs -y
+```
+
+Recommended TIFF stack:
+
+```bash
+conda install -c conda-forge tifffile imagecodecs -y
+```
+
+### 5.4 Install the repository
+
+```bash
+cd /root/sam2_segm
+pip install -U pip setuptools wheel
 pip install -e .
 ```
 
 Notes:
 
-- the repository now includes training dependencies such as `submitit`, `tensordict`, `tensorboard`, `fvcore`, `opencv-python`, `matplotlib`, and `tifffile`
-- building the optional SAM2 CUDA extension may fail on some environments; the project can still run without it
-
-## 6. Initial checkpoint placement
-
-SAM2 fine-tuning starts from an official SAM2.1 checkpoint.
-
-Recommended checkpoint location:
-
-```text
-/root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt
-```
-
-Example download:
+- the project depends on packages such as `hydra-core`, `submitit`, `tensordict`, `tensorboard`, `opencv-python`, `matplotlib`, and `tifffile`
+- the optional SAM2 CUDA extension may fail to compile on some machines; the rest of the project can still work
+- if needed, you can disable extension build explicitly:
 
 ```bash
-cd /root/hezhongyi-sam2_segm/checkpoints
+export SAM2_BUILD_CUDA=0
+pip install -e .
+```
+
+## 6. Pull the correct branch
+
+If your server clone is older, update to the HuBMAP branch:
+
+```bash
+cd /root/sam2_segm
+git fetch origin
+git checkout sam2_segm
+git pull origin sam2_segm
+```
+
+## 7. Base checkpoint
+
+The default setup uses the SAM2.1 tiny checkpoint.
+
+Recommended location:
+
+```text
+/root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt
+```
+
+Download:
+
+```bash
+mkdir -p /root/sam2_segm/checkpoints
+cd /root/sam2_segm/checkpoints
 wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
 ```
 
-The default HuBMAP config is currently built around the tiny model:
+Default config:
 
-- config: `configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml`
-- init checkpoint: `sam2.1_hiera_tiny.pt`
+```text
+configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml
+```
 
-You can later swap to `small`, `base_plus`, or `large`, but the tiny model is the cleanest starting point for engineering validation.
-
-## 7. Raw HuBMAP inputs
+## 8. Input data assumptions
 
 For each slide, the project expects:
 
 - `slide_id.tiff`
-  - raw whole-slide image
+  - raw slide image
 - `slide_id.json`
   - polygon annotations for glomeruli
   - the parser looks for labels such as `properties.classification.name == "glomerulus"`
 - `slide_id-anatomical-structure.json`
-  - polygon annotations for anatomical regions such as `Cortex` and `Medulla`
+  - polygon annotations for anatomical structures such as `Cortex` and `Medulla`
 
-This allows the project to:
+This allows the pipeline to:
 
-1. read the whole-slide TIFF
+1. read the WSI TIFF
 2. parse glomerulus polygons as instances
-3. optionally keep only cortex-region glomeruli
-4. tile the slide into trainable samples
-5. save SAM2-compatible single-frame training folders
+3. optionally keep only cortex-region instances
+4. tile the slide into trainable patches
+5. produce SAM2-compatible single-frame training folders
 
-## 8. Data preparation
+## 9. Dataset preparation
 
-### 8.1 Output dataset structure
-
-Recommended output directory:
-
-```text
-/root/datasets/HuBMAP_sam2
-```
+### 9.1 Output dataset structure
 
 The preparation script writes:
 
@@ -231,30 +295,16 @@ The preparation script writes:
     `-- summary.json
 ```
 
-`JPEGImages` is kept because the official SAM2 dataset interface expects that naming pattern, even though the actual tile files are stored as PNG.
+Although the folder is named `JPEGImages`, the actual images are stored as `PNG`. This preserves compatibility with the official SAM2 dataset interface.
 
-### 8.2 Preparation script
+### 9.2 Preparation command
 
-Main script:
-
-```bash
-python scripts/prepare_hubmap_sam2_dataset.py -h
-```
-
-What it does:
-
-- reads TIFF slides directly from the external dataset directory
-- parses glomerulus polygons as instances
-- optionally filters instances by anatomical ROI such as `Cortex`
-- cuts tiles using slide coordinates
-- keeps only positive tiles with enough tissue and glomerulus pixels
-- stores tile-local instance maps instead of one merged binary mask
-- writes prompt metadata per object
-- creates a slide-level train/val split
-
-### 8.3 Recommended command for your server
+Recommended command:
 
 ```bash
+cd /root/sam2_segm
+conda activate sam2_segm
+
 python scripts/prepare_hubmap_sam2_dataset.py \
   --images-dir /root/datasets/HuBMAP/train \
   --output-dir /root/datasets/HuBMAP_sam2 \
@@ -274,85 +324,101 @@ Useful options:
 - `--missing-roi-policy`
   - `skip-slide`, `ignore-roi`, or `error`
 - `--split-csv`
-  - reuse a fixed slide split from a CSV
+  - reuse a fixed slide split
 - `--downsample`
   - resize tiles after extraction
 - `--max-instances-per-tile`
-  - caps tile instance count so palette PNG IDs stay valid
+  - keeps palette PNG IDs safe
+- `--limit-slides`
+  - useful for smoke tests
 
-## 9. Training
+### 9.3 What the script saves per tile
 
-### 9.1 Default training config
+Each saved sample includes:
 
-Main HuBMAP config:
+- RGB tile image
+- instance ID annotation PNG
+- per-object metadata
+  - visible area
+  - sampled interior point
+  - bounding box
+
+## 10. Training
+
+### 10.1 Main training config
+
+Main config:
 
 ```text
 configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml
 ```
 
-This config:
+The current default behavior is:
 
-- uses `num_frames=1`
-- freezes the image encoder by default
-- fine-tunes the promptable segmentation path
-- uses point prompts for training
-- mixes in box prompts with lower probability
-- writes validation metrics through `hubmap_sam2.meters.BinarySegmentationMeter`
+- `num_frames = 1`
+- image encoder frozen by default
+- prompt-based training enabled
+- point prompts are always used
+- box prompts are mixed in with a smaller probability
+- validation metrics are written through `hubmap_sam2.meters.BinarySegmentationMeter`
 
-### 9.2 Recommended training command
+### 10.2 Recommended training command
 
 ```bash
+cd /root/sam2_segm
+conda activate sam2_segm
+
 python scripts/train_hubmap_sam2.py \
   --dataset-root /root/datasets/HuBMAP_sam2 \
-  --init-checkpoint /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
   --num-gpus 1 \
   --num-nodes 1
 ```
 
-Optional Hydra overrides can be passed repeatedly:
+### 10.3 Adjusting training parameters
+
+You can pass Hydra overrides repeatedly:
 
 ```bash
 python scripts/train_hubmap_sam2.py \
   --dataset-root /root/datasets/HuBMAP_sam2 \
-  --init-checkpoint /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
   --hydra-override scratch.num_epochs=60 \
   --hydra-override scratch.train_batch_size=4 \
   --hydra-override scratch.num_train_workers=16
 ```
 
-### 9.3 Resume training
+### 10.4 Resume training
 
-Two common resume modes:
-
-1. Resume from the same run directory:
+Resume from the same run directory:
 
 ```bash
 python scripts/train_hubmap_sam2.py \
   --dataset-root /root/datasets/HuBMAP_sam2 \
-  --init-checkpoint /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
 ```
 
-If `checkpoint.pt` already exists in the run directory, the trainer resumes automatically.
+If `checkpoint.pt` already exists under the run directory, training resumes automatically.
 
-2. Start a new run initialized from an older run checkpoint:
+Start a new run from an older checkpoint:
 
 ```bash
 python scripts/train_hubmap_sam2.py \
   --dataset-root /root/datasets/HuBMAP_sam2 \
-  --init-checkpoint /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny_v2 \
-  --resume-from /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/latest.pt
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny_v2 \
+  --resume-from /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/latest.pt
 ```
 
-### 9.4 Training outputs
+### 10.5 Training outputs
 
-With the run directory above, training produces:
+Training outputs look like:
 
 ```text
-/root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/
+/root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/
 |-- checkpoints
 |   |-- checkpoint.pt
 |   |-- latest.pt
@@ -378,73 +444,60 @@ Meaning:
 - `latest.pt`
   - latest alias
 - `best.pt`
-  - best checkpoint alias for the tracked validation meter
+  - best checkpoint alias
 - `history.csv`
-  - merged epoch-level train/val history
+  - merged train/val epoch history
 - `training_curves.png`
-  - local overview figure for loss and validation metrics
+  - loss and metric curves
 
-### 9.5 Regenerate summary artifacts
+### 10.6 Regenerate training summary
 
 ```bash
 python scripts/summarize_hubmap_sam2_run.py \
-  --run-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
+  --run-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
 ```
 
-Or:
+## 11. Evaluation
 
-```bash
-python scripts/train_hubmap_sam2.py \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
-  --summary-only
-```
-
-## 10. Evaluation
-
-### 10.1 Supported evaluation modes
+### 11.1 Supported modes
 
 `scripts/evaluate_hubmap_sam2.py` supports:
 
 - `oracle-point`
-  - GT-derived interior point per instance
 - `oracle-box`
-  - GT-derived box per instance
 - `oracle-point-box`
-  - GT-derived point + box
 - `amg`
-  - pure SAM2 automatic mask generation
 - `prior-mask`
-  - coarse-mask-driven refinement, suitable for U-Net -> SAM2 evaluation
 
-### 10.2 Recommended promptable validation command
+### 11.2 Recommended validation command
 
-This is the best measure of how well the fine-tuned SAM2 responds to ideal automatic prompts derived from the instance masks:
+Recommended model-quality check:
 
 ```bash
 python scripts/evaluate_hubmap_sam2.py \
   --dataset-dir /root/datasets/HuBMAP_sam2 \
   --split val \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode oracle-point \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_oracle_point
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_oracle_point
 ```
 
-### 10.3 Evaluate pure automatic SAM2 mode
+### 11.3 Evaluate pure automatic SAM2 mode
 
 ```bash
 python scripts/evaluate_hubmap_sam2.py \
   --dataset-dir /root/datasets/HuBMAP_sam2 \
   --split val \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode amg \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_amg
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_amg
 ```
 
-### 10.4 Evaluate U-Net prior -> SAM2 refinement
+### 11.4 Evaluate U-Net -> SAM2 refinement
 
-If you have coarse binary masks for the validation tiles, place them in a directory using either:
+If you have coarse validation masks, place them under a prior-mask directory using one of:
 
 - `<prior_mask_dir>/<sample_id>.png`
 - `<prior_mask_dir>/<sample_id>.tif`
@@ -457,14 +510,14 @@ python scripts/evaluate_hubmap_sam2.py \
   --dataset-dir /root/datasets/HuBMAP_sam2 \
   --split val \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode prior-mask \
   --prior-mask-dir /root/hezhongyi-unet_segm/outputs/hubmap_val_binary \
   --prompt-mode point_box \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_prior_mask
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_prior_mask
 ```
 
-### 10.5 Metrics written by evaluation
+### 11.5 Evaluation outputs
 
 The evaluation script writes:
 
@@ -480,20 +533,20 @@ Metrics include:
 - Recall
 - Specificity
 - Accuracy
-- instance-level Precision / Recall / F1 through greedy IoU matching
+- instance-level Precision / Recall / F1
 
-## 11. Inference
+## 12. Inference
 
-### 11.1 Tile inference with pure SAM2 automatic prompts
+### 12.1 Tile inference with pure SAM2 automatic prompts
 
 ```bash
 python scripts/predict_hubmap_sam2.py \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode tile \
   --prompt-source amg \
   --image /root/datasets/HuBMAP_sam2/val/JPEGImages/0486052bb_x00000_y00000/00000.png \
-  --output-dir /root/hezhongyi-sam2_segm/inference/tile_amg
+  --output-dir /root/sam2_segm/inference/tile_amg
 ```
 
 Outputs:
@@ -503,28 +556,26 @@ Outputs:
 - `binary_mask.png`
 - `summary.json`
 
-### 11.2 Tile inference with coarse-mask prompts
-
-This is the recommended SAM2 refinement mode when you already have a U-Net coarse mask.
+### 12.2 Tile inference with prior mask prompts
 
 ```bash
 python scripts/predict_hubmap_sam2.py \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode tile \
   --prompt-source mask \
   --prompt-mode point_box \
   --image /root/datasets/HuBMAP_sam2/val/JPEGImages/0486052bb_x00000_y00000/00000.png \
   --prior-mask /root/hezhongyi-unet_segm/outputs/sample_binary.png \
-  --output-dir /root/hezhongyi-sam2_segm/inference/tile_prior_mask
+  --output-dir /root/sam2_segm/inference/tile_prior_mask
 ```
 
-### 11.3 Whole-slide inference with SAM2 automatic mask generation
+### 12.3 Whole-slide inference with pure SAM2 AMG
 
 ```bash
 python scripts/predict_hubmap_sam2.py \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode wsi \
   --prompt-source amg \
   --slide /root/datasets/HuBMAP/train/0486052bb.tiff \
@@ -532,17 +583,15 @@ python scripts/predict_hubmap_sam2.py \
   --roi-labels Cortex \
   --tile-size 1024 \
   --stride 1024 \
-  --output-dir /root/hezhongyi-sam2_segm/inference/wsi_amg_0486052bb
+  --output-dir /root/sam2_segm/inference/wsi_amg_0486052bb
 ```
 
-### 11.4 Whole-slide inference with U-Net prior mask refinement
-
-If U-Net has already produced a full-slide binary mask:
+### 12.4 Whole-slide inference with U-Net prior mask refinement
 
 ```bash
 python scripts/predict_hubmap_sam2.py \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode wsi \
   --prompt-source mask \
   --prompt-mode point_box \
@@ -552,7 +601,7 @@ python scripts/predict_hubmap_sam2.py \
   --roi-labels Cortex \
   --tile-size 1024 \
   --stride 1024 \
-  --output-dir /root/hezhongyi-sam2_segm/inference/wsi_prior_mask_0486052bb
+  --output-dir /root/sam2_segm/inference/wsi_prior_mask_0486052bb
 ```
 
 Whole-slide outputs:
@@ -561,35 +610,55 @@ Whole-slide outputs:
 - `binary_mask.tiff`
 - `summary.json`
 
-## 12. Recommended server workflow
+## 13. Complete server workflow
 
-### Step 1. Pull the code
+### Step 1. Pull code
 
 ```bash
-cd /root/hezhongyi-sam2_segm
+cd /root/sam2_segm
 git fetch origin
 git checkout sam2_segm
 git pull origin sam2_segm
 ```
 
-### Step 2. Install dependencies
+### Step 2. Create and activate environment
 
 ```bash
-cd /root/hezhongyi-sam2_segm
-conda activate sam2_kidney
+conda create -n sam2_segm python=3.10 pip -y
+conda activate sam2_segm
+```
+
+### Step 3. Install PyTorch and TIFF dependencies
+
+```bash
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia -y
+conda install -c conda-forge tifffile imagecodecs -y
+```
+
+If your machine is not on CUDA 12.4, replace `pytorch-cuda=12.4` with the version matched to `nvidia-smi`.
+
+### Step 4. Install the repository
+
+```bash
+cd /root/sam2_segm
+pip install -U pip setuptools wheel
 pip install -e .
 ```
 
-### Step 3. Download the base checkpoint
+### Step 5. Download the SAM2 checkpoint
 
 ```bash
-cd /root/hezhongyi-sam2_segm/checkpoints
+mkdir -p /root/sam2_segm/checkpoints
+cd /root/sam2_segm/checkpoints
 wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
 ```
 
-### Step 4. Prepare the HuBMAP SAM2 dataset
+### Step 6. Prepare HuBMAP SAM2 dataset
 
 ```bash
+cd /root/sam2_segm
+conda activate sam2_segm
+
 python scripts/prepare_hubmap_sam2_dataset.py \
   --images-dir /root/datasets/HuBMAP/train \
   --output-dir /root/datasets/HuBMAP_sam2 \
@@ -598,38 +667,41 @@ python scripts/prepare_hubmap_sam2_dataset.py \
   --stride 1024 \
   --val-ratio 0.2 \
   --min-tissue-coverage 0.05 \
+  --min-roi-coverage 0.05 \
   --min-positive-pixels 64
 ```
 
-### Step 5. Train
+### Step 7. Train
 
 ```bash
 python scripts/train_hubmap_sam2.py \
   --dataset-root /root/datasets/HuBMAP_sam2 \
-  --init-checkpoint /root/hezhongyi-sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny
+  --init-checkpoint /root/sam2_segm/checkpoints/sam2.1_hiera_tiny.pt \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny \
+  --num-gpus 1 \
+  --num-nodes 1
 ```
 
-### Step 6. Evaluate
+### Step 8. Evaluate
 
 ```bash
 python scripts/evaluate_hubmap_sam2.py \
   --dataset-dir /root/datasets/HuBMAP_sam2 \
   --split val \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode oracle-point \
-  --output-dir /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_oracle_point
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/eval_oracle_point
 ```
 
-### Step 7. Run no-GT inference
+### Step 9. Run no-GT inference
 
-Recommended hybrid route:
+Recommended production route:
 
 ```bash
 python scripts/predict_hubmap_sam2.py \
   --config configs/sam2.1_training/sam2.1_hiera_t_hubmap_glomerulus.yaml \
-  --checkpoint /root/hezhongyi-sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_tiny/checkpoints/best.pt \
   --mode wsi \
   --prompt-source mask \
   --prompt-mode point_box \
@@ -639,42 +711,67 @@ python scripts/predict_hubmap_sam2.py \
   --roi-labels Cortex \
   --tile-size 1024 \
   --stride 1024 \
-  --output-dir /root/hezhongyi-sam2_segm/inference/wsi_prior_mask_0486052bb
+  --output-dir /root/sam2_segm/inference/wsi_prior_mask_0486052bb
 ```
 
-## 13. Practical notes
+## 14. Monitoring and useful checks
 
-### 13.1 Why validation has multiple modes
+Check GPU usage during training:
 
-SAM2 is a promptable model, so there are two different questions:
+```bash
+watch -n 2 nvidia-smi
+```
 
-- how well does the fine-tuned model respond when given a good automatic prompt?
-- how well does the full no-GT automatic prompting pipeline perform?
+Check whether TIFF decoding dependency is installed:
 
-That is why both oracle-prompt evaluation and no-GT automatic inference paths are kept.
+```bash
+python -c "import imagecodecs; print('imagecodecs ok')"
+```
 
-### 13.2 Why the recommended production route uses U-Net first
+Check whether the prepared dataset exists:
 
-Glomeruli are small objects in large histology slides. A coarse semantic detector is often better at finding candidate regions cheaply, while SAM2 is better used as an instance-aware refinement model once prompts already exist.
+```bash
+ls /root/datasets/HuBMAP_sam2/train/JPEGImages | head
+ls /root/datasets/HuBMAP_sam2/train/Annotations | head
+cat /root/datasets/HuBMAP_sam2/manifests/summary.json
+```
 
-So the intended complement is:
+## 15. Troubleshooting
 
-- U-Net: broad candidate recall
-- SAM2: promptable instance refinement
+### 15.1 TIFF preprocessing error: `requires the 'imagecodecs' package`
 
-### 13.3 Why slide-level split matters
+If preprocessing fails with an error like:
 
-Train/val split must happen by slide, not by tile. Otherwise nearby tiles from the same WSI leak into both sets and inflate validation scores.
+```text
+ValueError: <COMPRESSION.JPEG: 7> requires the 'imagecodecs' package
+```
 
-### 13.4 About automatic prompts used here
+install:
 
-This project uses a distance-transform interior point rather than a naive centroid because:
+```bash
+conda install -c conda-forge imagecodecs -y
+```
 
-- it is more likely to stay inside irregular polygon masks
-- it is less sensitive to elongated or concave shapes
-- it is directly usable as a positive SAM2 point prompt
+Then rerun preprocessing.
 
-### 13.5 Current default recommendation
+### 15.2 `image data are not memory-mappable`
+
+This is not the actual failure by itself. It only means `tifffile.memmap(...)` could not memory-map the slide and the loader fell back to normal reading.
+
+### 15.3 SAM2 CUDA extension build fails during `pip install -e .`
+
+If the optional extension fails to build, you can usually still use the project. If needed:
+
+```bash
+export SAM2_BUILD_CUDA=0
+pip install -e .
+```
+
+### 15.4 Why train/val must be split by slide
+
+If neighboring tiles from the same slide appear in both train and validation, validation metrics will look artificially optimistic. This repository always treats slide-level splitting as the correct default.
+
+## 16. Practical recommendation
 
 For the first full server run, the recommended baseline is:
 
@@ -682,16 +779,16 @@ For the first full server run, the recommended baseline is:
 - `1024 x 1024` tiles
 - SAM2.1 tiny initialization
 - oracle-point validation during model development
-- U-Net prior mask refinement for production inference
+- `U-Net coarse mask -> SAM2 refinement` for production inference
 
-## 14. Status
+## 17. Status
 
-This repository is now structured as a complete HuBMAP glomerulus SAM2 engineering project:
+This repository is now structured as a complete HuBMAP glomerulus SAM2 project:
 
-- raw dataset stays outside the repository
+- raw data stays outside the repository
 - preprocessing is included in-repo
-- the training config is HuBMAP-specific
+- training config is HuBMAP-specific
 - validation metrics and summaries are available
-- best/latest checkpoints are saved
+- `best` and `latest` checkpoints are saved
 - tile and whole-slide inference are available
-- the U-Net -> SAM2 hybrid route is directly supported
+- the hybrid U-Net -> SAM2 route is directly supported
