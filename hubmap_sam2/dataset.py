@@ -786,8 +786,8 @@ def discover_prepared_samples(dataset_root: Path, split: str) -> List[PreparedSa
 
 
 def load_prepared_sample(sample: PreparedSample) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
-    image = np.asarray(Image.open(sample.image_path).convert("RGB"))
-    annotation = np.asarray(Image.open(sample.annotation_path))
+    image = np.array(Image.open(sample.image_path).convert("RGB"), copy=True)
+    annotation = np.array(Image.open(sample.annotation_path), copy=True)
     with sample.metadata_path.open("r", encoding="utf-8") as handle:
         metadata = json.load(handle)
     return image, annotation.astype(np.int32), metadata

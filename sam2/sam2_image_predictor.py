@@ -58,12 +58,10 @@ class SAM2ImagePredictor:
         # Predictor config
         self.mask_threshold = mask_threshold
 
-        # Spatial dim for backbone feature maps
-        self._bb_feat_sizes = [
-            (256, 256),
-            (128, 128),
-            (64, 64),
-        ]
+        # Spatial dims for backbone feature maps are inferred dynamically from
+        # the actual model output so non-default training resolutions (e.g. 896)
+        # work in evaluation and inference.
+        self._bb_feat_sizes = None
 
     @classmethod
     def from_pretrained(cls, model_id: str, **kwargs) -> "SAM2ImagePredictor":
@@ -115,14 +113,15 @@ class SAM2ImagePredictor:
         ), f"input_image must be of size 1x3xHxW, got {input_image.shape}"
         logging.info("Computing image embeddings for the provided image...")
         backbone_out = self.model.forward_image(input_image)
-        _, vision_feats, _, _ = self.model._prepare_backbone_features(backbone_out)
+        _, vision_feats, _, feat_sizes = self.model._prepare_backbone_features(backbone_out)
         # Add no_mem_embed, which is added to the lowest rest feat. map during training on videos
         if self.model.directly_add_no_mem_embed:
             vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
 
+        self._bb_feat_sizes = feat_sizes
         feats = [
             feat.permute(1, 2, 0).reshape(1, -1, *feat_size)
-            for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
+            for feat, feat_size in zip(vision_feats[::-1], feat_sizes[::-1])
         ][::-1]
         self._features = {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
         self._is_image_set = True
@@ -158,14 +157,15 @@ class SAM2ImagePredictor:
         ), f"img_batch must be of size Bx3xHxW, got {img_batch.shape}"
         logging.info("Computing image embeddings for the provided images...")
         backbone_out = self.model.forward_image(img_batch)
-        _, vision_feats, _, _ = self.model._prepare_backbone_features(backbone_out)
+        _, vision_feats, _, feat_sizes = self.model._prepare_backbone_features(backbone_out)
         # Add no_mem_embed, which is added to the lowest rest feat. map during training on videos
         if self.model.directly_add_no_mem_embed:
             vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
 
+        self._bb_feat_sizes = feat_sizes
         feats = [
             feat.permute(1, 2, 0).reshape(batch_size, -1, *feat_size)
-            for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
+            for feat, feat_size in zip(vision_feats[::-1], feat_sizes[::-1])
         ][::-1]
         self._features = {"image_embed": feats[-1], "high_res_feats": feats[:-1]}
         self._is_image_set = True
