@@ -972,12 +972,16 @@ class Trainer:
                 )
 
             if self.loss_conf is not None:
-                loss_keys = set(self.loss_conf.keys()) - set(["all"])
-                assert all([k in loss_keys for k in val_keys]), (
-                    f"Keys in val datasets do not match the keys in losses."
-                    f"\nMissing in losses: {set(val_keys) - loss_keys}"
-                    f"\nMissing in val datasets: {loss_keys - set(val_keys)}"
-                )
+                configured_loss_keys = set(self.loss_conf.keys())
+                # A loss entry named "all" acts as the shared/default loss for
+                # every dataset key, so it should satisfy validation-key checks.
+                if "all" not in configured_loss_keys:
+                    loss_keys = configured_loss_keys
+                    assert all([k in loss_keys for k in val_keys]), (
+                        f"Keys in val datasets do not match the keys in losses."
+                        f"\nMissing in losses: {set(val_keys) - loss_keys}"
+                        f"\nMissing in val datasets: {loss_keys - set(val_keys)}"
+                    )
 
     def _setup_components(self):
 
