@@ -6,6 +6,8 @@
 
 
 import copy
+import os
+import sys
 from typing import Tuple
 
 import numpy as np
@@ -303,6 +305,16 @@ def sample_one_point_from_error_center(gt_masks, pred_masks, padding=True):
         import cv2
     except ImportError:
         # Headless server environments often miss libGL even when cv2 is installed.
+        # Failed cv2 imports can also leave `.../site-packages/cv2` on sys.path,
+        # which later shadows Python's stdlib `typing` during spawned worker imports.
+        sys.path[:] = [
+            path
+            for path in sys.path
+            if os.path.basename(os.path.normpath(path)) != "cv2"
+        ]
+        for module_name in list(sys.modules):
+            if module_name == "cv2" or module_name.startswith("cv2."):
+                sys.modules.pop(module_name, None)
         # Fall back to uniform error-region sampling so training/validation can proceed.
         return sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1)
 

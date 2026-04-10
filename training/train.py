@@ -11,7 +11,6 @@ import sys
 import traceback
 from argparse import ArgumentParser
 
-import submitit
 import torch
 
 from hydra import compose, initialize_config_module
@@ -65,53 +64,56 @@ def format_exception(e: Exception, limit=20):
     return f"{type(e).__name__}: {e}\nTraceback:\n{traceback_str}"
 
 
-class SubmititRunner(submitit.helpers.Checkpointable):
-    """A callable which is passed to submitit to launch the jobs."""
+def build_submitit_runner(submitit_module, port, cfg):
+    class SubmititRunner(submitit_module.helpers.Checkpointable):
+        """A callable which is passed to submitit to launch the jobs."""
 
-    def __init__(self, port, cfg):
-        self.cfg = cfg
-        self.port = port
-        self.has_setup = False
+        def __init__(self, port, cfg):
+            self.cfg = cfg
+            self.port = port
+            self.has_setup = False
 
-    def run_trainer(self):
-        job_env = submitit.JobEnvironment()
-        # Need to add this again so the hydra.job.set_env PYTHONPATH
-        # is also set when launching jobs.
-        add_pythonpath_to_sys_path()
-        os.environ["MASTER_ADDR"] = job_env.hostnames[0]
-        os.environ["MASTER_PORT"] = str(self.port)
-        os.environ["RANK"] = str(job_env.global_rank)
-        os.environ["LOCAL_RANK"] = str(job_env.local_rank)
-        os.environ["WORLD_SIZE"] = str(job_env.num_tasks)
+        def run_trainer(self):
+            job_env = submitit_module.JobEnvironment()
+            # Need to add this again so the hydra.job.set_env PYTHONPATH
+            # is also set when launching jobs.
+            add_pythonpath_to_sys_path()
+            os.environ["MASTER_ADDR"] = job_env.hostnames[0]
+            os.environ["MASTER_PORT"] = str(self.port)
+            os.environ["RANK"] = str(job_env.global_rank)
+            os.environ["LOCAL_RANK"] = str(job_env.local_rank)
+            os.environ["WORLD_SIZE"] = str(job_env.num_tasks)
 
-        register_omegaconf_resolvers()
-        cfg_resolved = OmegaConf.to_container(self.cfg, resolve=False)
-        cfg_resolved = OmegaConf.create(cfg_resolved)
+            register_omegaconf_resolvers()
+            cfg_resolved = OmegaConf.to_container(self.cfg, resolve=False)
+            cfg_resolved = OmegaConf.create(cfg_resolved)
 
-        trainer = instantiate(cfg_resolved.trainer, _recursive_=False)
-        trainer.run()
+            trainer = instantiate(cfg_resolved.trainer, _recursive_=False)
+            trainer.run()
 
-    def __call__(self):
-        job_env = submitit.JobEnvironment()
-        self.setup_job_info(job_env.job_id, job_env.global_rank)
-        try:
-            self.run_trainer()
-        except Exception as e:
-            # Log the exception. Then raise it again (as what SubmititRunner currently does).
-            message = format_exception(e)
-            logging.error(message)
-            raise e
+        def __call__(self):
+            job_env = submitit_module.JobEnvironment()
+            self.setup_job_info(job_env.job_id, job_env.global_rank)
+            try:
+                self.run_trainer()
+            except Exception as e:
+                # Log the exception. Then raise it again (as what SubmititRunner currently does).
+                message = format_exception(e)
+                logging.error(message)
+                raise e
 
-    def setup_job_info(self, job_id, rank):
-        """Set up slurm job info"""
-        self.job_info = {
-            "job_id": job_id,
-            "rank": rank,
-            "cluster": self.cfg.get("cluster", None),
-            "experiment_log_dir": self.cfg.launcher.experiment_log_dir,
-        }
+        def setup_job_info(self, job_id, rank):
+            """Set up slurm job info"""
+            self.job_info = {
+                "job_id": job_id,
+                "rank": rank,
+                "cluster": self.cfg.get("cluster", None),
+                "experiment_log_dir": self.cfg.launcher.experiment_log_dir,
+            }
 
-        self.has_setup = True
+            self.has_setup = True
+
+    return SubmititRunner(port, cfg)
 
 
 def add_pythonpath_to_sys_path():
@@ -162,6 +164,8 @@ def main(args) -> None:
         args.use_cluster if args.use_cluster is not None else submitit_conf.use_cluster
     )
     if submitit_conf.use_cluster:
+        import submitit
+
         executor = submitit.AutoExecutor(folder=submitit_dir)
         submitit_conf.partition = (
             args.partition
@@ -229,7 +233,7 @@ def main(args) -> None:
         main_port = random.randint(
             submitit_conf.port_range[0], submitit_conf.port_range[1]
         )
-        runner = SubmititRunner(main_port, cfg)
+        runner = build_submitit_runner(submitit, main_port, cfg)
         job = executor.submit(runner)
         print(f"Submitit Job ID: {job.job_id}")
         runner.setup_job_info(job.job_id, rank=0)

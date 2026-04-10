@@ -307,6 +307,7 @@ cat /root/datasets/HuBMAP_tiles_v2_sam2/manifests/summary.json
 - 训练始终使用 prompt
 - 训练以点提示为主，少量混入 box 提示
 - `num_correction_pt_per_frame = 0`
+- 验证阶段的点采样使用 `uniform`
 
 最后这一点很重要：
 
@@ -622,6 +623,7 @@ python scripts/predict_hubmap_sam2.py \
 
 - 默认依赖改为 `opencv-python-headless`
 - 即使没有可用 `cv2`，验证阶段也会自动回退到无 OpenCV 的采样逻辑
+- 当前 HuBMAP 主配置也已经显式把验证点采样设为 `uniform`
 
 如果你本地代码较旧，先执行：
 

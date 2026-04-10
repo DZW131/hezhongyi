@@ -195,6 +195,7 @@ trainer:
     rand_init_cond_frames_for_train: false
     rand_init_cond_frames_for_eval: false
     num_correction_pt_per_frame: 0
+    pt_sampling_for_eval: uniform
     use_act_ckpt_iterative_pt_sampling: false
     forward_backbone_per_frame_for_eval: true
 
