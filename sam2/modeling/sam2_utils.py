@@ -299,7 +299,12 @@ def sample_one_point_from_error_center(gt_masks, pred_masks, padding=True):
     - points: [B, 1, 2], dtype=torch.float, contains (x, y) coordinates of each sampled point
     - labels: [B, 1], dtype=torch.int32, where 1 means positive clicks and 0 means negative clicks
     """
-    import cv2
+    try:
+        import cv2
+    except ImportError:
+        # Headless server environments often miss libGL even when cv2 is installed.
+        # Fall back to uniform error-region sampling so training/validation can proceed.
+        return sample_random_points_from_errors(gt_masks, pred_masks, num_pt=1)
 
     if pred_masks is None:
         pred_masks = torch.zeros_like(gt_masks)
