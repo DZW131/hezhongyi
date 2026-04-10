@@ -402,7 +402,10 @@ class SAM2Train(SAM2Base):
         current_out["multistep_object_score_logits"] = [object_score_logits]
 
         # Optionally, sample correction points iteratively to correct the mask
-        if frame_idx in frames_to_add_correction_pt:
+        if (
+            frame_idx in frames_to_add_correction_pt
+            and self.num_correction_pt_per_frame > 0
+        ):
             point_inputs, final_sam_outputs = self._iter_correct_pt_sampling(
                 is_init_cond_frame,
                 point_inputs,
@@ -469,6 +472,15 @@ class SAM2Train(SAM2Base):
         all_pred_ious = [ious]
         all_point_inputs = [point_inputs]
         all_object_score_logits = [object_score_logits]
+        sam_outputs = (
+            low_res_multimasks,
+            high_res_multimasks,
+            ious,
+            low_res_masks,
+            high_res_masks,
+            None,
+            object_score_logits,
+        )
         for _ in range(self.num_correction_pt_per_frame):
             # sample a new point from the error between prediction and ground-truth
             # (with a small probability, directly sample from GT masks instead of errors)
