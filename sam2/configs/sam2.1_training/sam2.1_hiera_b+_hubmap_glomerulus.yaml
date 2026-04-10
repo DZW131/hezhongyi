@@ -215,8 +215,7 @@ trainer:
                 video_dataset:
                   _target_: training.dataset.vos_raw_dataset.PNGRawDataset
                   img_folder: ${dataset.train_img_folder}
-                  gt_folder:
-                    - ${dataset.train_gt_folder}
+                  gt_folder: ${dataset.train_gt_folder}
                   file_list_txt: ${dataset.train_list_txt}
                 sampler:
                   _target_: training.dataset.vos_sampler.RandomUniformSampler
@@ -247,8 +246,7 @@ trainer:
                 video_dataset:
                   _target_: training.dataset.vos_raw_dataset.PNGRawDataset
                   img_folder: ${dataset.val_img_folder}
-                  gt_folder:
-                    - ${dataset.val_gt_folder}
+                  gt_folder: ${dataset.val_gt_folder}
                   file_list_txt: ${dataset.val_list_txt}
                 sampler:
                   _target_: training.dataset.vos_sampler.EvalSampler

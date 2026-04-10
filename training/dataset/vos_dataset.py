@@ -49,6 +49,7 @@ class VOSDataset(VisionDataset):
         self.target_segments_available = target_segments_available
 
     def _get_datapoint(self, idx):
+        last_error = None
 
         for retry in range(MAX_RETRIES):
             try:
@@ -62,6 +63,7 @@ class VOSDataset(VisionDataset):
                 )
                 break  # Succesfully loaded video
             except Exception as e:
+                last_error = e
                 if self.training:
                     logging.warning(
                         f"Loading failed (id={idx}); Retry {retry} with exception: {e}"
@@ -70,6 +72,10 @@ class VOSDataset(VisionDataset):
                 else:
                     # Shouldn't fail to load a val video
                     raise e
+        else:
+            raise RuntimeError(
+                f"Failed to load a training datapoint after {MAX_RETRIES} retries."
+            ) from last_error
 
         datapoint = self.construct(video, sampled_frms_and_objs, segment_loader)
         for transform in self._transforms:

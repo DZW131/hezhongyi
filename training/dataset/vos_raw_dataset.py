@@ -28,6 +28,18 @@ from training.dataset.vos_segment_loader import (
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
 
 
+def normalize_pathlike_arg(path_or_paths, arg_name):
+    if isinstance(path_or_paths, ListConfig):
+        path_or_paths = list(path_or_paths)
+    if isinstance(path_or_paths, (list, tuple)):
+        if len(path_or_paths) != 1:
+            raise ValueError(
+                f"{arg_name} expects a single path, but received {len(path_or_paths)} entries: {path_or_paths}"
+            )
+        path_or_paths = path_or_paths[0]
+    return path_or_paths
+
+
 def list_frame_paths(video_frame_root):
     frame_paths = []
     for extension in IMAGE_EXTENSIONS:
@@ -82,23 +94,27 @@ class PNGRawDataset(VOSRawDataset):
         truncate_video=-1,
         frames_sampling_mult=False,
     ):
-        self.img_folder = img_folder
-        self.gt_folder = gt_folder
+        self.img_folder = normalize_pathlike_arg(img_folder, "img_folder")
+        self.gt_folder = normalize_pathlike_arg(gt_folder, "gt_folder")
+        self.file_list_txt = normalize_pathlike_arg(file_list_txt, "file_list_txt")
+        self.excluded_videos_list_txt = normalize_pathlike_arg(
+            excluded_videos_list_txt, "excluded_videos_list_txt"
+        )
         self.sample_rate = sample_rate
         self.is_palette = is_palette
         self.single_object_mode = single_object_mode
         self.truncate_video = truncate_video
 
         # Read the subset defined in file_list_txt
-        if file_list_txt is not None:
-            with g_pathmgr.open(file_list_txt, "r") as f:
+        if self.file_list_txt is not None:
+            with g_pathmgr.open(self.file_list_txt, "r") as f:
                 subset = [os.path.splitext(line.strip())[0] for line in f]
         else:
             subset = os.listdir(self.img_folder)
 
         # Read and process excluded files if provided
-        if excluded_videos_list_txt is not None:
-            with g_pathmgr.open(excluded_videos_list_txt, "r") as f:
+        if self.excluded_videos_list_txt is not None:
+            with g_pathmgr.open(self.excluded_videos_list_txt, "r") as f:
                 excluded_files = [os.path.splitext(line.strip())[0] for line in f]
         else:
             excluded_files = []
