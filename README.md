@@ -1,10 +1,10 @@
-# HuBMAP Glomeruli Segmentation Pipeline
+﻿# HuBMAP 肾小球分割工程说明
 
-This repository is a PyTorch U-Net project adapted for HuBMAP kidney glomeruli segmentation on a Linux server.
+该仓库是在 PyTorch U-Net 基础上，针对 HuBMAP 肾脏病理数据改造的肾小球分割工程化版本，面向 Linux 服务器训练与推理流程。
 
-If you want a more presentation-oriented explanation of the project goals, strategy, current results, and suggested reporting language for teachers or doctors, see [PROJECT_PRESENTATION_GUIDE.md](PROJECT_PRESENTATION_GUIDE.md).
+如果需要一份更适合向老师、医生或课题组做汇报的文档，请参阅 [PROJECT_PRESENTATION_GUIDE.md](PROJECT_PRESENTATION_GUIDE.md)。
 
-The current workflow is designed for the dataset layout you already have on the server:
+当前工作流已适配如下服务器数据布局：
 
 ```text
 /root/datasets/HuBMAP/train/
@@ -17,53 +17,53 @@ The current workflow is designed for the dataset layout you already have on the 
   ...
 ```
 
-You do not need to rename or manually convert the HuBMAP dataset before using this project.
+使用该项目时，无需手工重命名，也无需预先将 HuBMAP 原始数据转换为 mask 图。
 
-The repository now supports:
+当前仓库已经支持：
 
-- raw TIFF + polygon JSON annotation input
-- optional anatomical ROI filtering from `*-anatomical-structure.json`
-- train/val tile generation
-- training with richer metrics
-- best/latest checkpoint saving
-- local training curve and preview generation
-- standalone checkpoint evaluation
-- TIFF and HSPN inference scripts
-- performance-oriented training options for a 4090 server
+- 原始 `TIFF + polygon JSON` 标注输入
+- 基于 `*-anatomical-structure.json` 的解剖 ROI 过滤
+- 训练/验证 patch 自动生成
+- 更完整的训练评估指标
+- `best.pth` / `latest.pth` 权重管理
+- 本地训练曲线与验证可视化输出
+- 独立 checkpoint 评估脚本
+- 大图 TIFF 推理与院内图推理脚本
+- 面向 4090 服务器的训练提速选项
 
-## 0. Quick start
+## 0. 快速开始
 
-If you only want the shortest path from raw HuBMAP slides to a validated checkpoint:
+如果只希望用最短路径完成一次 HuBMAP 训练闭环，可按以下顺序执行：
 
-1. update the repository to `unet_segm`
-2. generate tiles from `/root/datasets/HuBMAP/train`
-3. train with `--scale 0.5`
-4. evaluate `best.pth`
-5. use `predict_tiff.py` as the direct baseline for new slides
+1. 将服务器仓库更新到 `unet_segm` 分支
+2. 从 `/root/datasets/HuBMAP/train` 生成训练 patch
+3. 使用 `--scale 0.5` 训练模型
+4. 评估 `best.pth`
+5. 对新 slide 先使用 `predict_tiff.py` 做直接基线推理
 
-## 0.1 Current validated baseline on your server
+## 0.1 当前已验证基线
 
-The pipeline has already been validated on your server with the following run:
+该项目已经在服务器上完成过一轮有效训练与验证，结果如下：
 
-- tiles: `/root/datasets/HuBMAP_tiles_v2`
-- checkpoint directory: `/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2`
-- best epoch: `13`
-- best validation Dice: `0.9292`
-- validation IoU: `0.8678`
-- validation Precision: `0.9291`
-- validation Recall: `0.9294`
-- validation Specificity: `0.9966`
-- validation Accuracy: `0.9935`
+- tiles 目录：`/root/datasets/HuBMAP_tiles_v2`
+- checkpoint 目录：`/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2`
+- 最优 epoch：`13`
+- 最优验证 Dice：`0.9292`
+- 验证 IoU：`0.8678`
+- 验证 Precision：`0.9291`
+- 验证 Recall：`0.9294`
+- 验证 Specificity：`0.9966`
+- 验证 Accuracy：`0.9935`
 
-The corresponding best checkpoint is:
+对应最佳权重为：
 
 ```text
 /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth
 ```
 
-If you want to reproduce the exact validated baseline instead of starting a new experiment directory, use `hubmap_unet_run2` and `HuBMAP_tiles_v2` in the commands below.
+如果需要直接复现当前已验证基线，建议沿用 `HuBMAP_tiles_v2` 和 `hubmap_unet_run2` 这组目录命名。
 
-## 1. Repository layout
+## 1. 仓库结构
 
 ```text
 .
@@ -84,64 +84,66 @@ If you want to reproduce the exact validated baseline instead of starting a new 
 |   |-- unet_model.py
 |   `-- unet_parts.py
 `-- utils
+    |-- checkpoint_io.py
     |-- data_loading.py
     |-- dice_score.py
+    |-- inference_postprocessing.py
     |-- segmentation_metrics.py
     |-- visualization.py
     `-- utils.py
 ```
 
-## 2. What the HuBMAP files mean
+## 2. HuBMAP 文件含义
 
-For each slide, the project expects:
+对每张 slide，项目默认读取以下三类文件：
 
 - `slide_id.tiff`
-  - the raw whole-slide image
+  - 原始全视野病理图像
 - `slide_id.json`
-  - polygon annotations for glomeruli
-  - the script looks for `properties.classification.name == "glomerulus"`
+  - 肾小球 polygon 标注
+  - 脚本默认寻找 `properties.classification.name == "glomerulus"`
 - `slide_id-anatomical-structure.json`
-  - polygon annotations for anatomical structures
-  - in your data these include labels such as `Cortex` and `Medulla`
+  - 解剖结构 polygon 标注
+  - 当前数据中已确认包含 `Cortex`、`Medulla`
 
-This means the pipeline can:
+因此，该项目的数据处理流程是：
 
-1. read the TIFF slide
-2. rasterize glomerulus polygons into a binary mask
-3. optionally rasterize anatomical polygons such as `Cortex`
-4. tile the slide into trainable patches
-5. train U-Net on the generated tile dataset
+1. 读取 TIFF
+2. 将肾小球 polygon 栅格化为二值 mask
+3. 可选读取解剖 ROI，例如 `Cortex`
+4. 将 WSI 切成可训练 patch
+5. 基于 patch 数据训练 U-Net
 
-## 3. Recommended server environment
+## 3. 推荐服务器环境
 
-Recommended setup:
+推荐环境：
 
-- OS: Linux
-- GPU: NVIDIA RTX 4090
-- Python: 3.10+
-- PyTorch: 2.x
-- CUDA: version matched to the server driver
+- 系统：Linux
+- GPU：NVIDIA RTX 4090
+- Python：3.10+
+- PyTorch：2.x
+- CUDA：与服务器驱动匹配
 
-Notes:
+注意事项：
 
-- `requirements.txt` does not install `torch`. Install the correct CUDA-compatible PyTorch build first.
-- `wandb` is optional. If it is missing, training still works.
+- `requirements.txt` 不负责安装 `torch`，应先安装与服务器 CUDA 匹配的 PyTorch 版本
+- `wandb` 为可选依赖，即使未登录也可正常训练
 
-Example environment setup:
+示例环境配置：
 
 ```bash
 cd /root/Pytorch-UNet/Pytorch-UNet-master
 
 conda activate unet_kidney
 
-# Install a CUDA-compatible torch build first, based on your server setup.
-# Then install project dependencies.
+# 先根据服务器 CUDA 环境安装合适的 torch
+# 再安装本项目依赖
 pip install -r requirements.txt
 ```
 
-## 4. Update the old server project
+## 4. 更新服务器旧项目
 
-If your server still has the old project version, update it to the `unet_segm` branch:
+如果服务器仍保留旧版仓库，可用以下命令更新到当前版本：
 
 ```bash
 cd /root/Pytorch-UNet/Pytorch-UNet-master
@@ -150,27 +152,27 @@ git checkout unet_segm
 git pull origin unet_segm
 ```
 
-After that, the old workflow using in-repo `data/imgs` and `data/masks` is no longer required. You can keep the raw HuBMAP dataset unchanged in `/root/datasets/HuBMAP`.
+更新后，不再依赖仓库内旧式的 `data/imgs`、`data/masks` 流程，原始 HuBMAP 数据可继续保持在 `/root/datasets/HuBMAP` 下不变。
 
-## 5. Data preparation
+## 5. 数据准备
 
-### 5.1 Input data
+### 5.1 原始输入目录
 
-Raw input slides stay where they already are:
+原始数据保持在已有位置：
 
 ```text
 /root/datasets/HuBMAP/train
 ```
 
-### 5.2 Output tiles
+### 5.2 推荐输出目录
 
-Recommended output tile directory:
+建议将切片结果输出到：
 
 ```text
 /root/datasets/HuBMAP_tiles
 ```
 
-The script will create:
+脚本会自动生成如下结构：
 
 ```text
 /root/datasets/HuBMAP_tiles/
@@ -186,29 +188,25 @@ The script will create:
     `-- summary.json
 ```
 
-### 5.3 Tile generation script
-
-Main script:
+### 5.3 主脚本
 
 ```bash
 python scripts/prepare_hubmap_tiles.py -h
 ```
 
-What it does:
+脚本完成的工作包括：
 
-- reads each TIFF slide
-- reads the matching glomerulus polygon JSON
-- converts polygons to a binary mask
-- optionally reads anatomical JSON and keeps only selected ROI labels such as `Cortex`
-- tiles the slide into patches
-- filters empty background
-- keeps a balanced set of positive and negative patches
-- splits slides into train and val sets
-- saves manifests for reproducibility
+- 读取每张 TIFF
+- 读取对应肾小球 polygon JSON
+- 栅格化为二值 mask
+- 可选读取 anatomical JSON 并仅保留指定 ROI，例如 `Cortex`
+- 滑窗切 patch
+- 过滤大面积空白背景
+- 控制正负样本比例
+- 按 slide 级别划分 train / val
+- 保存 manifest 便于复现
 
-### 5.4 Recommended command for your server dataset
-
-This command is the best starting point for your current dataset layout:
+### 5.4 当前服务器推荐切片命令
 
 ```bash
 python scripts/prepare_hubmap_tiles.py \
@@ -223,45 +221,21 @@ python scripts/prepare_hubmap_tiles.py \
   --negative-ratio 2.0
 ```
 
-Why this works for your dataset:
+### 5.5 重要切片参数
 
-- `--images-dir` points to the existing directory that already contains `.tiff`, `.json`, and `-anatomical-structure.json`
-- the script automatically detects `slide_id.json` as the glomerulus annotation source
-- `--roi-labels Cortex` restricts tile generation to cortex regions using `slide_id-anatomical-structure.json`
-- if a slide does not contain `Cortex`, the default policy is now to skip that slide instead of crashing the whole run
-- TIFF slides with extra singleton dimensions or `CHW` channel order are normalized automatically before tiling
+- `--tile-size`：切片尺寸
+- `--stride`：滑窗步长
+- `--downsample`：切片后额外缩放
+- `--val-ratio`：按 slide 划分的验证集比例
+- `--target-labels`：视为阳性的标注类别，默认 `glomerulus`
+- `--roi-labels`：保留的 anatomical ROI 标签，例如 `Cortex`
+- `--min-roi-coverage`：patch 需要满足的最小 ROI 覆盖比例
+- `--missing-roi-policy`：ROI 缺失时的处理策略，可选 `skip-slide`、`ignore-roi`、`error`
+- `--min-tissue-coverage`：过滤接近纯白背景的 patch
+- `--min-positive-pixels`：强制判定正样本所需的最少阳性像素
+- `--negative-ratio`：每个正样本保留多少个负样本
 
-### 5.5 Important preprocessing options
-
-- `--tile-size`
-  - tile size before optional resizing
-- `--stride`
-  - sliding window step
-- `--downsample`
-  - optional resizing after tiling
-- `--val-ratio`
-  - validation split ratio at the slide level
-- `--target-labels`
-  - annotation labels to treat as positive, default is `glomerulus`
-- `--roi-labels`
-  - anatomical labels to keep, for example `Cortex`
-- `--min-roi-coverage`
-  - minimum ROI overlap required for a tile when ROI labels are used
-- `--missing-roi-policy`
-  - controls what happens if a requested ROI label is missing on a slide
-  - `skip-slide` (default): skip the slide
-  - `ignore-roi`: process the slide without ROI filtering
-  - `error`: stop immediately
-- `--min-tissue-coverage`
-  - filters nearly empty white background patches
-- `--min-positive-pixels`
-  - minimum positive pixels required to force a tile to be positive
-- `--negative-ratio`
-  - number of negative tiles kept per positive tile
-
-### 5.6 If you want to use all anatomical regions
-
-If you do not want cortex filtering:
+### 5.6 如不使用 Cortex 过滤
 
 ```bash
 python scripts/prepare_hubmap_tiles.py \
@@ -271,19 +245,17 @@ python scripts/prepare_hubmap_tiles.py \
   --stride 1024
 ```
 
-## 6. Training
+## 6. 模型训练
 
-### 6.1 Recommended checkpoint directory
+### 6.1 推荐 checkpoint 目录
 
-Recommended checkpoint output directory:
+建议输出到：
 
 ```text
 /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
-This keeps the training artifacts inside the project directory while leaving the original HuBMAP dataset unchanged.
-
-### 6.2 Recommended training command
+### 6.2 推荐训练命令
 
 ```bash
 python train.py \
@@ -308,9 +280,9 @@ python train.py \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
-### 6.3 Metrics tracked during training
+### 6.3 训练中记录的指标
 
-The training pipeline now records:
+训练阶段会记录：
 
 - validation loss
 - Dice
@@ -319,18 +291,18 @@ The training pipeline now records:
 - Recall
 - Specificity
 - Accuracy
-- epoch time
-- training images per second
+- epoch 用时
+- 训练吞吐量（images / second）
 
-### 6.4 Training outputs
+### 6.4 训练输出
 
-With the checkpoint directory above, training produces:
+训练完成后通常会生成：
 
 ```text
 /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/
 |-- best.pth
 |-- latest.pth
-|-- epoch_001.pth                 # only if --save-every-epoch is used
+|-- epoch_001.pth                 # 仅在 --save-every-epoch 时生成
 `-- analysis
     |-- history.csv
     |-- training_curves.png
@@ -339,36 +311,21 @@ With the checkpoint directory above, training produces:
     `-- val_previews
 ```
 
-What they mean:
+### 6.5 已集成的训练提速项
 
-- `best.pth`
-  - best checkpoint according to `--checkpoint-metric`
-- `latest.pth`
-  - most recent checkpoint
-- `history.csv`
-  - epoch-level metrics and timing
-- `training_curves.png`
-  - local overview plot of training progress
-- `best_preview.png`
-  - best validation example visualization
-- `best_metrics.json`
-  - saved metric summary for the best checkpoint
+训练脚本已集成以下提速策略：
 
-### 6.5 Throughput optimizations already included
+- AMP 混合精度
+- CUDA 下默认启用 TF32
+- 默认启用 cuDNN benchmark
+- non-blocking 数据拷贝
+- DataLoader `persistent_workers`
+- DataLoader `prefetch_factor`
+- 可选 `torch.compile`
+- mask 值缓存
+- 可调的验证频率与可视化频率
 
-The training script includes server-oriented speedups:
-
-- AMP support
-- TF32 enabled by default on CUDA
-- cuDNN benchmark enabled by default
-- non-blocking host-to-device copies
-- dataloader `persistent_workers`
-- dataloader `prefetch_factor`
-- optional `torch.compile`
-- mask-value caching in the mask directory
-- configurable validation and preview frequency
-
-### 6.6 Resume training
+### 6.6 继续训练
 
 ```bash
 python train.py \
@@ -383,9 +340,9 @@ python train.py \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
-## 7. Standalone evaluation
+## 7. 独立评估
 
-Use this script to evaluate a saved checkpoint on a prepared image/mask dataset:
+如果需要对某个已保存权重单独评估：
 
 ```bash
 python evaluate_checkpoint.py \
@@ -400,23 +357,23 @@ python evaluate_checkpoint.py \
   --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/eval_best
 ```
 
-Outputs:
+输出内容包括：
 
 - `metrics.json`
 - `preview.png`
 
-## 8. Visualization
+## 8. 可视化
 
-### 8.1 Generated automatically during training
+### 8.1 训练时自动生成
 
-Training automatically generates:
+训练时会自动生成：
 
 - `analysis/history.csv`
 - `analysis/training_curves.png`
 - `analysis/best_preview.png`
 - `analysis/val_previews/*.png`
 
-### 8.2 Regenerate the training curve image
+### 8.2 重新绘制训练曲线
 
 ```bash
 python scripts/plot_training_history.py \
@@ -424,11 +381,9 @@ python scripts/plot_training_history.py \
   --output /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/analysis/training_curves_regenerated.png
 ```
 
-## 9. Inference
+## 9. 推理
 
-### 9.1 Standard image inference
-
-For regular `.jpg` or `.png` images:
+### 9.1 普通图片推理
 
 ```bash
 python predict.py \
@@ -438,7 +393,7 @@ python predict.py \
   --classes 2
 ```
 
-### 9.2 TIFF inference for large HuBMAP slides
+### 9.2 HuBMAP 大图 TIFF 推理
 
 ```bash
 python predict_tiff.py \
@@ -450,9 +405,9 @@ python predict_tiff.py \
   --classes 2
 ```
 
-Use the same `--scale` value that was used during training. For the current HuBMAP baseline in this repository, that value is `0.5`.
+推理阶段应尽量保持与训练时一致的 `--scale`。当前已验证基线使用的是 `0.5`。
 
-### 9.3 HSPN inference with contrast enhancement
+### 9.3 院内图增强版推理
 
 ```bash
 python predict_hspn_enhanced.py \
@@ -465,7 +420,7 @@ python predict_hspn_enhanced.py \
   --tile-size 1024
 ```
 
-### 9.4 HSPN inference with stain normalization
+### 9.4 院内图染色归一化推理
 
 ```bash
 python predict_hspn_stain_norm.py \
@@ -478,46 +433,46 @@ python predict_hspn_stain_norm.py \
   --tile-size 1024
 ```
 
-### 9.5 Recommended testing strategy for in-hospital slides
+### 9.5 院内图推荐测试策略
 
-When you test internal hospital slides, do not assume the HSPN-specific scripts will always be better than direct inference. In practice:
+院内图推理时，不建议默认认为 HSPN 变体一定优于直接推理。根据当前测试情况：
 
-- `predict_tiff.py` is the baseline and should always be tested first
-- `predict_hspn_enhanced.py` can improve recall on pale slides, but it can also over-segment
-- `predict_hspn_stain_norm.py` is useful when the staining style is clearly different from HuBMAP, but it should still be compared against the direct baseline
+- `predict_tiff.py` 应作为首选基线
+- `predict_hspn_enhanced.py` 可能提升召回，但也更容易过分割
+- `predict_hspn_stain_norm.py` 在染色差异明显时可尝试，但仍需与 direct 基线对照
 
-Recommended order:
+推荐顺序：
 
-1. Run direct inference first with the same `--scale` used during training.
-2. If the direct result is too conservative or misses obvious glomeruli, try `predict_hspn_enhanced.py`.
-3. If the staining style is strongly shifted, also try `predict_hspn_stain_norm.py`.
-4. Compare the masks side by side and prefer the result that is medically plausible, not simply the one with the largest positive area.
+1. 先用 direct 方式推理，保持与训练一致的 `--scale`
+2. 若 direct 结果过于保守，再测试 `predict_hspn_enhanced.py`
+3. 若染色风格与 HuBMAP 差异明显，再补充测试 `predict_hspn_stain_norm.py`
+4. 最终应以医学上合理的结果为准，而不是单纯选择前景面积更大的 mask
 
-Recommended settings for the current HuBMAP baseline:
+当前这套基线的推荐设置：
 
-- always use `--classes 2`
-- always use `--scale 0.5`
-- use `--threshold 0.5` for `predict_tiff.py`
-- start from `--threshold 0.7` for `predict_hspn_enhanced.py`
-- use `--threshold 0.5` for `predict_hspn_stain_norm.py`
-- if `predict_hspn_enhanced.py` produces too much foreground, increase the threshold and compare `0.6`, `0.7`, and `0.8`
-- if HSPN predictions still contain large block-like false positives, enable tissue masking and connected-component filtering
-- install `scipy` before using connected-component filtering, for example `pip install -r requirements.txt`
+- 始终使用 `--classes 2`
+- 始终使用 `--scale 0.5`
+- `predict_tiff.py` 推荐从 `--threshold 0.5` 开始
+- `predict_hspn_enhanced.py` 推荐从 `--threshold 0.7` 开始
+- `predict_hspn_stain_norm.py` 推荐从 `--threshold 0.5` 开始
+- 若 `enhanced` 前景污染过多，可继续比较 `0.6`、`0.7`、`0.8` 甚至更高阈值
+- 若院内图结果仍有大块假阳性，可启用 tissue mask 与连通域过滤
+- 使用连通域过滤前需安装 `scipy`，例如 `pip install -r requirements.txt`
 
-Important note:
+HSPN 脚本还支持以下后处理参数：
 
-- for the current two-class checkpoint, the HSPN scripts interpret class 1 as the glomerulus class
-- `predict_hspn_enhanced.py` now uses the positive-class probability threshold when `--classes 2`, so the threshold is meaningful for suppressing over-segmentation
-- HSPN scripts also support postprocessing flags:
-  - `--apply-tissue-mask`
-  - `--min-component-area`
-  - `--max-component-area`
-  - `--max-component-extent`
+- `--apply-tissue-mask`
+- `--min-component-area`
+- `--max-component-area`
+- `--max-component-extent`
+- `--white-threshold`
 
-Example commands for the current internal slide `/root/datasets/diyingjia/202601260012.tif`:
+### 9.6 当前院内图示例命令
+
+对于当前院内图 `/root/datasets/diyingjia/202601260012.tif`，可按以下方式测试：
 
 ```bash
-# direct baseline
+# direct 基线
 python predict_tiff.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -527,7 +482,7 @@ python predict_tiff.py \
   --classes 2 \
   --threshold 0.5
 
-# contrast-enhanced HSPN inference
+# 增强版 HSPN 推理
 python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -537,7 +492,7 @@ python predict_hspn_enhanced.py \
   --classes 2 \
   --threshold 0.7
 
-# stain-normalized HSPN inference
+# 染色归一化 HSPN 推理
 python predict_hspn_stain_norm.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -548,10 +503,10 @@ python predict_hspn_stain_norm.py \
   --threshold 0.5
 ```
 
-If HSPN outputs still show large block-like contamination, try the filtered versions below:
+如果 HSPN 结果出现明显的大块污染或条带状假阳性，可尝试过滤版：
 
 ```bash
-# contrast-enhanced HSPN inference with tissue and connected-component filtering
+# 增强版 + tissue mask + 连通域过滤
 python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -565,7 +520,7 @@ python predict_hspn_enhanced.py \
   --max-component-area 30000 \
   --max-component-extent 384
 
-# stain-normalized HSPN inference with tissue and connected-component filtering
+# 染色归一化版 + tissue mask + 连通域过滤
 python predict_hspn_stain_norm.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -580,11 +535,11 @@ python predict_hspn_stain_norm.py \
   --max-component-extent 384
 ```
 
-These filtering values are practical starting points for the current internal slide tests. They are not universal constants, so always verify the final mask visually.
+以上参数是当前院内图测试中的经验起点，不是所有病例的固定常数，最终仍需结合可视化结果进行判断。
 
-## 10. End-to-end workflow for your server
+## 10. 当前服务器的一条完整流程
 
-### Step 1. Update code
+### 第一步：更新代码
 
 ```bash
 cd /root/Pytorch-UNet/Pytorch-UNet-master
@@ -593,14 +548,14 @@ git checkout unet_segm
 git pull origin unet_segm
 ```
 
-### Step 2. Install dependencies
+### 第二步：安装依赖
 
 ```bash
 conda activate unet_kidney
 pip install -r requirements.txt
 ```
 
-### Step 3. Prepare HuBMAP tiles
+### 第三步：准备 HuBMAP tiles
 
 ```bash
 python scripts/prepare_hubmap_tiles.py \
@@ -615,7 +570,7 @@ python scripts/prepare_hubmap_tiles.py \
   --negative-ratio 2.0
 ```
 
-### Step 4. Train
+### 第四步：训练
 
 ```bash
 python train.py \
@@ -637,7 +592,7 @@ python train.py \
   --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet
 ```
 
-### Step 5. Evaluate the best checkpoint
+### 第五步：评估最佳权重
 
 ```bash
 python evaluate_checkpoint.py \
@@ -650,7 +605,7 @@ python evaluate_checkpoint.py \
   --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet/eval_best
 ```
 
-### Step 6. Run inference
+### 第六步：推理
 
 ```bash
 python predict_tiff.py \
@@ -662,89 +617,94 @@ python predict_tiff.py \
   --classes 2
 ```
 
-## 11. Practical notes
+## 11. 实用说明
 
-### 11.1 Why use `--roi-labels Cortex`
+### 11.1 为什么推荐 `--roi-labels Cortex`
 
-Your anatomical JSON files contain `Cortex` and `Medulla`. Glomeruli are expected in cortex regions, so using:
+当前 anatomical JSON 中包含 `Cortex` 与 `Medulla`。肾小球主要位于皮质区，因此启用：
 
 ```bash
 --roi-labels Cortex
 ```
 
-usually reduces wasted tiles and speeds up downstream training.
+通常会带来以下收益：
 
-### 11.2 Why slide-level splitting matters
+- 减少无关区域
+- 提升阳性样本密度
+- 降低背景噪声
+- 提高训练效率
 
-Train/val split should happen at the slide level, not the patch level. Otherwise neighboring patches from the same slide may appear in both train and validation sets, which makes validation metrics look overly optimistic.
+### 11.2 为什么必须按 slide 划分 train / val
 
-### 11.3 Old in-repo `data/imgs` and `data/masks`
+训练集与验证集应按 slide 划分，而不是按 patch 随机打散。否则同一张大图的相邻 patch 可能同时进入 train 和 val，导致验证结果过于乐观。
 
-Your older project version used:
+### 11.3 旧版 `data/imgs` 与 `data/masks`
+
+旧版项目依赖：
 
 ```text
 /root/Pytorch-UNet/Pytorch-UNet-master/data/imgs
 /root/Pytorch-UNet/Pytorch-UNet-master/data/masks
 ```
 
-The new recommended workflow no longer depends on these directories. The project can generate and read tiles directly from external dataset directories such as:
+当前推荐流程已不再依赖这些目录，而是直接使用外部 tile 目录，例如：
 
 ```text
 /root/datasets/HuBMAP_tiles
 ```
 
-### 11.4 Best checkpoint selection
+### 11.4 最优权重选择
 
-The training loop now keeps:
+训练后会自动保留：
 
 - `best.pth`
 - `latest.pth`
 
-so you do not need to manually guess which `checkpoint_epochXX.pth` to use.
+因此不再需要人工从 `checkpoint_epochXX.pth` 中猜测哪一轮最好。
 
-### 11.5 If `torch.compile` causes issues
+### 11.5 若 `torch.compile` 有兼容问题
 
-Disable it with:
+可关闭：
 
 ```bash
 --compile off
 ```
 
-### 11.6 If you want every epoch checkpoint
+### 11.6 若需要每个 epoch 都保存
 
-Use:
+可增加：
 
 ```bash
 --save-every-epoch
 ```
 
-### 11.7 Why `Accuracy` is high in this segmentation task
+### 11.7 为什么 Accuracy 很高
 
-This project is a pixel-level segmentation task with a strong foreground/background imbalance:
+该任务是像素级分割，前景/背景极不平衡：
 
-- most pixels are background
-- only a small fraction of pixels belong to glomeruli
+- 背景像素远多于肾小球像素
+- 因此 `Accuracy` 和 `Specificity` 容易显得很高
 
-Because of that, `Accuracy` and `Specificity` can become very high even when the foreground prediction is not perfect. For this reason, the most informative metrics for this project are:
+所以在该项目中，更有代表性的指标是：
 
 - Dice
 - IoU
 - Precision
 - Recall
 
-For the current validated baseline, the most important number to report is the validation Dice of `0.9292`.
+当前已验证基线中，最值得汇报的主指标是验证 Dice `0.9292`。
 
-## 12. Current project status
+## 12. 当前项目状态
 
-This repository is now structured as a complete HuBMAP glomeruli segmentation project for your server workflow:
+当前仓库已经形成一套较完整的 HuBMAP 肾小球分割工程流程：
 
-- raw dataset stays unchanged
-- the project performs annotation parsing and tiling
-- the project trains directly from generated tiles
-- the project saves best/latest checkpoints
-- the project provides evaluation and visualization tools
-- the project supports TIFF and HSPN inference
+- 原始数据集保持不变
+- 项目内完成 polygon 标注解析与切片
+- 支持直接基于外部 tiles 训练
+- 自动保存最佳/最新权重
+- 提供独立评估与可视化工具
+- 支持 HuBMAP 大图与院内图推理
 
-## 13. Upstream origin
+## 13. 上游来源
 
-The project started from `milesial/Pytorch-UNet` and has been adapted into a HuBMAP-focused engineering workflow.
+该项目最初来源于 `milesial/Pytorch-UNet`，当前版本已被改造成面向 HuBMAP 肾小球分割与服务器部署流程的工程化项目。
