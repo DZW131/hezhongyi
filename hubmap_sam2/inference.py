@@ -4,12 +4,19 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+from hydra import compose
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 from hubmap_sam2.prompts import PromptRecord, instance_prompts_from_instance_map, prompts_from_binary_mask
+from training.utils.checkpoint_utils import (
+    load_checkpoint_and_apply_kernels,
+    load_state_dict_into_model,
+)
 from training.utils.train_utils import register_omegaconf_resolvers
 
 
@@ -32,6 +39,26 @@ def load_finetuned_model(
         # Resolvers may already be registered in the current process.
         pass
     torch_device = resolve_device(device)
+
+    cfg = compose(config_name=config_path)
+    OmegaConf.resolve(cfg)
+
+    if "trainer" in cfg and "model" in cfg.trainer:
+        model = instantiate(cfg.trainer.model, _recursive_=True)
+        state_dict = load_checkpoint_and_apply_kernels(
+            checkpoint_path=checkpoint_path,
+            ckpt_state_dict_keys=("model",),
+            map_location="cpu",
+        )
+        load_state_dict_into_model(
+            state_dict=state_dict,
+            model=model,
+            strict=False,
+        )
+        model = model.to(torch_device)
+        model.eval()
+        return model
+
     return build_sam2(config_path, checkpoint_path, device=torch_device, mode="eval")
 
 
