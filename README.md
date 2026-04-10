@@ -500,6 +500,26 @@ python scripts/evaluate_hubmap_sam2.py \
   --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/eval_oracle_point
 ```
 
+当前版本评估脚本的默认行为是：
+
+- 使用 `tqdm` 进度条显示整体评估进度
+- 默认静音每张图的 SAM2 embedding 日志
+- 默认只保存最终汇总指标
+- 不再默认生成逐样本 CSV 和预览图
+
+如果你只想看最终汇总，可以直接这样运行：
+
+```bash
+python scripts/evaluate_hubmap_sam2.py \
+  --dataset-dir /root/datasets/HuBMAP_tiles_v2_sam2 \
+  --split val \
+  --config configs/sam2.1_training/sam2.1_hiera_b+_hubmap_glomerulus.yaml \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/checkpoints/best.pt \
+  --mode oracle-point \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/eval_oracle_point \
+  --log-interval 0
+```
+
 ### 13.2 推荐：U-Net -> SAM2 混合路线评估
 
 ```bash
@@ -514,11 +534,61 @@ python scripts/evaluate_hubmap_sam2.py \
   --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/eval_prior_mask
 ```
 
-评估输出包括：
+### 13.3 当前标准基线结果
+
+当前仓库已经在标准配置下跑通了完整训练和离线评估：
+
+- 模型：`SAM2.1 Hiera B+`
+- 配置：`configs/sam2.1_training/sam2.1_hiera_b+_hubmap_glomerulus.yaml`
+- 数据：`/root/datasets/HuBMAP_tiles_v2_sam2`
+- checkpoint：`checkpoints/hubmap_glomerulus_sam2_bplus/checkpoints/best.pt`
+- 评估模式：`oracle-point`
+
+最终离线评测结果为：
+
+- `Dice = 0.9089`
+- `IoU = 0.8330`
+- `Precision = 0.9662`
+- `Recall = 0.8580`
+- `Specificity = 0.9977`
+- `Accuracy = 0.9876`
+
+对应输出文件：
+
+- `/root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/eval_oracle_point/metrics.json`
+
+训练阶段最终验证损失见：
+
+- `/root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/analysis/final_val_metrics.json`
+
+### 13.4 评估输出说明
+
+默认评估输出包括：
 
 - `metrics.json`
+
+只有在显式指定时才会额外输出：
+
 - `per_sample_metrics.csv`
 - `previews/*.png`
+
+如果你确实需要这些附加输出，可以这样运行：
+
+```bash
+python scripts/evaluate_hubmap_sam2.py \
+  --dataset-dir /root/datasets/HuBMAP_tiles_v2_sam2 \
+  --split val \
+  --config configs/sam2.1_training/sam2.1_hiera_b+_hubmap_glomerulus.yaml \
+  --checkpoint /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/checkpoints/best.pt \
+  --mode oracle-point \
+  --output-dir /root/sam2_segm/checkpoints/hubmap_glomerulus_sam2_bplus/eval_oracle_point_verbose \
+  --save-per-sample-csv \
+  --preview-count 8
+```
+
+如果你想恢复旧式详细日志，也可以加：
+
+- `--verbose-predictor-logs`
 
 ---
 
@@ -629,7 +699,13 @@ python scripts/predict_hubmap_sam2.py \
 
 - 训练稳定性会比较好
 - 与 U-Net 做公平对比更方便
-- 在 `oracle-point` 或 `oracle-point-box` 评估下，效果通常应该是有竞争力的
+- 在 `oracle-point` 评估下，这条标准基线已经实测达到：
+  - `Dice = 0.9089`
+  - `IoU = 0.8330`
+  - `Precision = 0.9662`
+  - `Recall = 0.8580`
+  - `Specificity = 0.9977`
+  - `Accuracy = 0.9876`
 - 但如果你未来想把“交互纠错能力”也纳入优化目标，再引入 correction points 会更完整
 
 换句话说，当前版本是一个很适合作为 **第一条可落地 SAM2 工程路线** 的配置，而不是最终极限版。
