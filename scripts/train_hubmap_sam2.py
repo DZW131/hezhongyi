@@ -71,7 +71,10 @@ def main():
         f"paths.experiment_dir={args.output_dir}",
     ]
     if args.resume_from:
-        command.extend(["--hydra-override", f"trainer.checkpoint.resume_from={args.resume_from}"])
+        # `resume_from` is an optional dataclass field on the trainer checkpoint config.
+        # Hydra treats it as an appended key in this composed config tree, so we add it
+        # with the `+` prefix instead of overriding a pre-existing YAML entry.
+        command.extend(["--hydra-override", f"+trainer.checkpoint.resume_from={args.resume_from}"])
     if args.train_batch_size > 0:
         command.extend(["--hydra-override", f"scratch.train_batch_size={args.train_batch_size}"])
     if args.val_batch_size > 0:
