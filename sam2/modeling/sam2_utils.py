@@ -28,11 +28,22 @@ class Sam2MaskdecoderOutputs:
     obj_ptr: Union[List[torch.Tensor], torch.Tensor] = None
     object_score_logits: Union[List[torch.Tensor], torch.Tensor] = None
     def __getitem__(self, key):
+        if isinstance(key, int):
+            field_names = list(self.__dataclass_fields__.keys())
+            key = field_names[key]
+        elif isinstance(key, slice):
+            field_names = list(self.__dataclass_fields__.keys())[key]
+            return tuple(getattr(self, field_name) for field_name in field_names)
         if getattr(self, key) is None:
             setattr(self, key, [])
         return getattr(self, key)
     def __setitem__(self, key, value=None):
         setattr(self, key, value)
+    def __iter__(self):
+        for field_name in self.__dataclass_fields__.keys():
+            yield getattr(self, field_name)
+    def __len__(self):
+        return len(self.__dataclass_fields__)
     def cat(self, dim=1):
         for k in self.__dataclass_fields__.keys():
             if len(self[k]) > 1:
