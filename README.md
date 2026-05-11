@@ -389,6 +389,20 @@ python predict_hspn_enhanced.py \
   --max-component-extent 384
 ```
 
+生成“原图 + 医生标注 + 模型预测”的叠加图：
+
+```bash
+python scripts/render_hzy_gt_pred_overlay.py \
+  --slide-ids 2026001_s0 \
+  --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
+  --predictions-dir /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025 \
+  --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025 \
+  --preview-max-size 8000
+```
+
+如果 `predictions-dir` 中已有多个 `*_pred_mask.png`，也可以不传 `--slide-ids`，脚本会自动批量生成对应 overlay。叠加图中红色轮廓是医生标注，蓝色半透明区域是模型预测。
+
 ## I. 后续病变量化任务的扩展方式
 
 本次微调优先解决“院内肾小球分割”问题。等基础分割稳定后，可利用同一批 `slice.db` 中的病变标注继续开展病变量化。当前脚本已经能导出以下病变 polygon：
