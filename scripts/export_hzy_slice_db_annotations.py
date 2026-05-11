@@ -52,6 +52,14 @@ def parse_args():
             "convert_hzy_czi_to_tiff.py --downsample when converting downsampled TIFFs."
         ),
     )
+    parser.add_argument(
+        "--split-scenes",
+        action="store_true",
+        help=(
+            "Split each CZI into scene-level annotation JSON files. HZY DB coordinates are "
+            "treated as mosaic-global coordinates and shifted into each scene coordinate frame."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -191,6 +199,99 @@ def parse_polygon_position(position_text: str, coordinate_scale: float = 1.0) ->
     return deduped
 
 
+def polygon_bounds(polygon: Sequence[Sequence[float]]) -> Tuple[float, float, float, float]:
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def polygon_intersects_box(polygon: Sequence[Sequence[float]], width: float, height: float) -> bool:
+    min_x, min_y, max_x, max_y = polygon_bounds(polygon)
+    return max_x >= 0 and max_y >= 0 and min_x <= width and min_y <= height
+
+
+def bbox_to_dict(box) -> Dict[str, int]:
+    return {
+        "x": int(box.x),
+        "y": int(box.y),
+        "w": int(box.w),
+        "h": int(box.h),
+    }
+
+
+def load_czi_scene_layout(czi_path: Path):
+    try:
+        from aicspylibczi import CziFile
+    except ImportError as exc:
+        raise ImportError(
+            "--split-scenes requires aicspylibczi. Install it on the conversion server with "
+            "`pip install aicspylibczi`."
+        ) from exc
+
+    czi = CziFile(str(czi_path))
+    scene_boxes = czi.get_all_scene_bounding_boxes()
+    mosaic_box = bbox_to_dict(czi.get_mosaic_bounding_box())
+
+    scenes = []
+    for scene_index, box in sorted(scene_boxes.items(), key=lambda item: int(item[0])):
+        scene_box = bbox_to_dict(box)
+        scenes.append(
+            {
+                "scene_index": int(scene_index),
+                "scene_x": scene_box["x"],
+                "scene_y": scene_box["y"],
+                "scene_width": scene_box["w"],
+                "scene_height": scene_box["h"],
+                "mosaic_x": mosaic_box["x"],
+                "mosaic_y": mosaic_box["y"],
+                "mosaic_width": mosaic_box["w"],
+                "mosaic_height": mosaic_box["h"],
+                "scene_offset_x": scene_box["x"] - mosaic_box["x"],
+                "scene_offset_y": scene_box["y"] - mosaic_box["y"],
+            }
+        )
+    return scenes
+
+
+def transform_polygon_to_scene(
+    polygon: Sequence[Sequence[float]],
+    scene: Dict[str, int],
+    coordinate_scale: float,
+) -> List[List[float]]:
+    offset_x = float(scene["scene_offset_x"])
+    offset_y = float(scene["scene_offset_y"])
+    return [
+        [
+            (float(x) - offset_x) * coordinate_scale,
+            (float(y) - offset_y) * coordinate_scale,
+        ]
+        for x, y in polygon
+    ]
+
+
+def make_feature(row: Dict[str, object], label: str, group_ids: Sequence[int], polygon: List[List[float]]):
+    return {
+        "type": "Feature",
+        "properties": {
+            "classification": {
+                "name": label,
+            },
+            "name": label,
+            "source_table": row.get("source_table"),
+            "mark_id": row.get("id"),
+            "group_ids": list(group_ids),
+            "remark": row.get("remark"),
+            "strokeColor": row.get("strokeColor"),
+            "method": row.get("method"),
+            "markType": row.get("markType"),
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [polygon],
+        },
+    }
+
+
 def iter_mark_rows(cursor: sqlite3.Cursor, mark_tables: Iterable[str]):
     for table_name in mark_tables:
         if not table_exists(cursor, table_name):
@@ -242,28 +343,7 @@ def export_db_annotations(
 
         for label in labels:
             label_counts[label] += 1
-            features.append(
-                {
-                    "type": "Feature",
-                    "properties": {
-                        "classification": {
-                            "name": label,
-                        },
-                        "name": label,
-                        "source_table": row.get("source_table"),
-                        "mark_id": row.get("id"),
-                        "group_ids": group_ids,
-                        "remark": row.get("remark"),
-                        "strokeColor": row.get("strokeColor"),
-                        "method": row.get("method"),
-                        "markType": row.get("markType"),
-                    },
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [polygon],
-                    },
-                }
-            )
+            features.append(make_feature(row, label, group_ids, polygon))
 
     connection.close()
 
@@ -281,6 +361,90 @@ def export_db_annotations(
         "features": features,
     }
     return feature_collection, label_counts, skipped_rows
+
+
+def export_db_annotations_by_scene(
+    db_path: Path,
+    czi_path: Path,
+    slide_id: str,
+    mark_tables: Sequence[str],
+    coordinate_scale: float,
+):
+    scenes = load_czi_scene_layout(czi_path)
+    scene_payloads = {
+        scene["scene_index"]: {
+            "scene": scene,
+            "features": [],
+            "label_counts": Counter(),
+        }
+        for scene in scenes
+    }
+
+    connection = sqlite3.connect(str(db_path))
+    cursor = connection.cursor()
+    group_names = load_mark_groups(cursor)
+    skipped_rows = 0
+
+    for row in iter_mark_rows(cursor, mark_tables):
+        polygon = parse_polygon_position(row.get("position"), coordinate_scale=1.0)
+        if polygon is None:
+            skipped_rows += 1
+            continue
+
+        group_ids = parse_group_ids(row.get("groupId"))
+        labels = labels_for_mark(group_ids, group_names, row.get("remark"), row.get("strokeColor"))
+        if not labels:
+            skipped_rows += 1
+            continue
+
+        for scene in scenes:
+            scene_polygon = transform_polygon_to_scene(
+                polygon=polygon,
+                scene=scene,
+                coordinate_scale=coordinate_scale,
+            )
+            scene_width = float(scene["scene_width"]) * coordinate_scale
+            scene_height = float(scene["scene_height"]) * coordinate_scale
+            if not polygon_intersects_box(scene_polygon, width=scene_width, height=scene_height):
+                continue
+
+            payload = scene_payloads[scene["scene_index"]]
+            for label in labels:
+                payload["label_counts"][label] += 1
+                payload["features"].append(make_feature(row, label, group_ids, scene_polygon))
+
+    connection.close()
+
+    outputs = []
+    for scene in scenes:
+        payload = scene_payloads[scene["scene_index"]]
+        scene_slide_id = "{}_s{}".format(slide_id, scene["scene_index"])
+        feature_collection = {
+            "type": "FeatureCollection",
+            "metadata": {
+                "slide_id": scene_slide_id,
+                "parent_slide_id": slide_id,
+                "source_db": str(db_path),
+                "source_czi": str(czi_path),
+                "mark_tables": list(mark_tables),
+                "coordinate_scale": coordinate_scale,
+                "coordinate_system": "scene_local_from_mosaic_global",
+                "scene": scene,
+                "label_counts": dict(payload["label_counts"]),
+                "skipped_rows": skipped_rows,
+            },
+            "features": payload["features"],
+        }
+        outputs.append(
+            {
+                "slide_id": scene_slide_id,
+                "feature_collection": feature_collection,
+                "label_counts": payload["label_counts"],
+                "skipped_rows": skipped_rows,
+                "scene": scene,
+            }
+        )
+    return outputs
 
 
 def write_csv(rows: List[dict], output_path: Path) -> None:
@@ -316,11 +480,65 @@ def main():
     used_slide_ids = set()
     manifest_rows: List[dict] = []
     global_label_counts: Counter = Counter()
+    source_slide_count = 0
 
     for db_path in discover_slice_dbs(raw_root):
         czi_path = find_czi_near_db(db_path)
         raw_slide_name = czi_path.stem if czi_path else db_path.parent.name
         slide_id = sanitize_slide_id(raw_slide_name, used_slide_ids)
+        source_slide_count += 1
+
+        if args.split_scenes:
+            if czi_path is None:
+                raise FileNotFoundError("--split-scenes requires a CZI next to {}".format(db_path))
+
+            scene_outputs = export_db_annotations_by_scene(
+                db_path=db_path,
+                czi_path=czi_path,
+                slide_id=slide_id,
+                mark_tables=args.mark_tables,
+                coordinate_scale=args.coordinate_scale,
+            )
+
+            for scene_output in scene_outputs:
+                scene_slide_id = scene_output["slide_id"]
+                feature_collection = scene_output["feature_collection"]
+                label_counts = scene_output["label_counts"]
+                skipped_rows = scene_output["skipped_rows"]
+                scene = scene_output["scene"]
+                annotation_path = annotations_dir / "{}.json".format(scene_slide_id)
+                feature_count = len(feature_collection["features"])
+
+                if feature_count > 0 or not args.skip_empty:
+                    with annotation_path.open("w", encoding="utf-8") as handle:
+                        json.dump(feature_collection, handle, ensure_ascii=False, indent=2)
+
+                    global_label_counts.update(label_counts)
+                    manifest_rows.append(
+                        {
+                            "slide_id": scene_slide_id,
+                            "parent_slide_id": slide_id,
+                            "czi_path": str(czi_path),
+                            "db_path": str(db_path),
+                            "annotation_path": str(annotation_path),
+                            "feature_count": feature_count,
+                            "skipped_rows": skipped_rows,
+                            "label_counts": json.dumps(dict(label_counts), ensure_ascii=False),
+                            "coordinate_system": "scene_local_from_mosaic_global",
+                            "scene_index": scene["scene_index"],
+                            "scene_x": scene["scene_x"],
+                            "scene_y": scene["scene_y"],
+                            "scene_width": scene["scene_width"],
+                            "scene_height": scene["scene_height"],
+                            "mosaic_x": scene["mosaic_x"],
+                            "mosaic_y": scene["mosaic_y"],
+                            "mosaic_width": scene["mosaic_width"],
+                            "mosaic_height": scene["mosaic_height"],
+                            "scene_offset_x": scene["scene_offset_x"],
+                            "scene_offset_y": scene["scene_offset_y"],
+                        }
+                    )
+            continue
 
         feature_collection, label_counts, skipped_rows = export_db_annotations(
             db_path=db_path,
@@ -336,26 +554,29 @@ def main():
             with annotation_path.open("w", encoding="utf-8") as handle:
                 json.dump(feature_collection, handle, ensure_ascii=False, indent=2)
 
-        global_label_counts.update(label_counts)
-        manifest_rows.append(
-            {
-                "slide_id": slide_id,
-                "czi_path": str(czi_path) if czi_path else "",
-                "db_path": str(db_path),
-                "annotation_path": str(annotation_path),
-                "feature_count": feature_count,
-                "skipped_rows": skipped_rows,
-                "label_counts": json.dumps(dict(label_counts), ensure_ascii=False),
-            }
-        )
+            global_label_counts.update(label_counts)
+            manifest_rows.append(
+                {
+                    "slide_id": slide_id,
+                    "czi_path": str(czi_path) if czi_path else "",
+                    "db_path": str(db_path),
+                    "annotation_path": str(annotation_path),
+                    "feature_count": feature_count,
+                    "skipped_rows": skipped_rows,
+                    "label_counts": json.dumps(dict(label_counts), ensure_ascii=False),
+                    "coordinate_system": "db_native",
+                }
+            )
 
     write_csv(manifest_rows, manifest_path)
     summary = {
         "raw_root": str(raw_root),
         "output_dir": str(output_dir),
         "slide_count": len(manifest_rows),
+        "source_slide_count": source_slide_count,
         "feature_count": sum(int(row["feature_count"]) for row in manifest_rows),
         "coordinate_scale": args.coordinate_scale,
+        "split_scenes": args.split_scenes,
         "label_counts": dict(global_label_counts),
         "manifest": str(manifest_path),
         "annotations_dir": str(annotations_dir),

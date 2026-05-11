@@ -3,7 +3,7 @@ import csv
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 
 import numpy as np
 
@@ -52,7 +52,32 @@ def parse_args():
     parser.add_argument("--single-slide-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--single-czi-path", default="", help=argparse.SUPPRESS)
     parser.add_argument("--single-output-path", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--single-scene-x", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--single-scene-y", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--single-scene-width", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--single-scene-height", type=int, default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
+
+
+def parse_optional_int(row: dict, key: str) -> Optional[int]:
+    value = (row.get(key) or "").strip()
+    if not value:
+        return None
+    return int(float(value))
+
+
+def parse_scene_region(row: dict) -> Optional[Tuple[int, int, int, int]]:
+    values = [
+        parse_optional_int(row, "scene_x"),
+        parse_optional_int(row, "scene_y"),
+        parse_optional_int(row, "scene_width"),
+        parse_optional_int(row, "scene_height"),
+    ]
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError("Incomplete scene region in manifest row for {}".format(row.get("slide_id")))
+    return tuple(int(value) for value in values)
 
 
 def read_manifest(manifest_csv: Path):
@@ -62,7 +87,7 @@ def read_manifest(manifest_csv: Path):
             slide_id = (row.get("slide_id") or "").strip()
             czi_path = (row.get("czi_path") or "").strip()
             if slide_id and czi_path:
-                yield slide_id, Path(czi_path)
+                yield slide_id, Path(czi_path), parse_scene_region(row)
 
 
 def squeeze_and_select_image(array: np.ndarray) -> np.ndarray:
@@ -140,15 +165,25 @@ def ensure_rgb(array: np.ndarray) -> np.ndarray:
     raise ValueError("Expected 2D grayscale or RGB image, got shape {}".format(array.shape))
 
 
-def read_with_aicspylibczi(czi_path: Path) -> np.ndarray:
+def read_with_aicspylibczi(
+    czi_path: Path,
+    region: Optional[Tuple[int, int, int, int]],
+    scale_factor: float,
+) -> Tuple[np.ndarray, bool]:
     from aicspylibczi import CziFile
 
     czi = CziFile(str(czi_path))
     try:
-        image = czi.read_mosaic(C=0, scale_factor=1.0)
+        if region is None:
+            image = czi.read_mosaic(C=0, scale_factor=scale_factor)
+        else:
+            image = czi.read_mosaic(region=region, C=0, scale_factor=scale_factor)
     except Exception:
+        if region is not None:
+            raise
         image = czi.read_image()[0]
-    return np.asarray(image)
+        return np.asarray(image), False
+    return np.asarray(image), True
 
 
 def read_with_czifile(czi_path: Path) -> np.ndarray:
@@ -163,9 +198,19 @@ def read_with_tifffile(czi_path: Path) -> np.ndarray:
     return np.asarray(tifffile.imread(str(czi_path)))
 
 
-def read_czi(czi_path: Path, reader: str) -> np.ndarray:
+def read_czi(
+    czi_path: Path,
+    reader: str,
+    region: Optional[Tuple[int, int, int, int]],
+    downsample: float,
+) -> Tuple[np.ndarray, bool]:
+    if region is not None and reader not in ("auto", "aicspylibczi"):
+        raise ValueError("Scene region conversion requires reader=auto or reader=aicspylibczi")
+
     attempts: Iterable[str]
-    if reader == "auto":
+    if region is not None:
+        attempts = ("aicspylibczi",)
+    elif reader == "auto":
         attempts = ("aicspylibczi", "czifile", "tifffile")
     else:
         attempts = (reader,)
@@ -174,11 +219,11 @@ def read_czi(czi_path: Path, reader: str) -> np.ndarray:
     for backend in attempts:
         try:
             if backend == "aicspylibczi":
-                return read_with_aicspylibczi(czi_path)
+                return read_with_aicspylibczi(czi_path, region=region, scale_factor=downsample)
             if backend == "czifile":
-                return read_with_czifile(czi_path)
+                return read_with_czifile(czi_path), False
             if backend == "tifffile":
-                return read_with_tifffile(czi_path)
+                return read_with_tifffile(czi_path), False
         except Exception as exc:  # noqa: BLE001 - collect backend failures for a useful final error.
             errors.append("{}: {}".format(backend, exc))
 
@@ -229,20 +274,34 @@ def convert_one_slide(
     overwrite: bool,
     downsample: float,
     compression: str,
+    region: Optional[Tuple[int, int, int, int]] = None,
 ) -> str:
+    if not (0 < downsample <= 1.0):
+        raise ValueError("--downsample must be in the interval (0, 1].")
+
     if output_path.exists() and not overwrite:
         print("[skip] {} already exists".format(output_path))
         return "skipped"
 
-    print("Reading {}".format(czi_path))
-    image = ensure_rgb(read_czi(czi_path, reader))
-    original_shape = image.shape
-    image = resize_image(image, downsample)
+    if region is None:
+        print("Reading {}".format(czi_path))
+    else:
+        print("Reading {} region={}".format(czi_path, region))
+    raw_image, reader_applied_downsample = read_czi(
+        czi_path=czi_path,
+        reader=reader,
+        region=region,
+        downsample=downsample,
+    )
+    image = ensure_rgb(raw_image)
+    read_shape = image.shape
+    if not reader_applied_downsample:
+        image = resize_image(image, downsample)
     print(
-        "Writing {} with shape {} from original shape {}, compression={}".format(
+        "Writing {} with shape {} from read shape {}, compression={}".format(
             output_path,
             image.shape,
-            original_shape,
+            read_shape,
             compression,
         )
     )
@@ -259,6 +318,7 @@ def run_isolated_child(
     overwrite: bool,
     downsample: float,
     compression: str,
+    region: Optional[Tuple[int, int, int, int]],
 ):
     command = [
         sys.executable,
@@ -276,6 +336,19 @@ def run_isolated_child(
         "--compression",
         compression,
     ]
+    if region is not None:
+        command.extend(
+            [
+                "--single-scene-x",
+                str(region[0]),
+                "--single-scene-y",
+                str(region[1]),
+                "--single-scene-width",
+                str(region[2]),
+                "--single-scene-height",
+                str(region[3]),
+            ]
+        )
     if overwrite:
         command.append("--overwrite")
     return subprocess.run(command)
@@ -290,7 +363,7 @@ def write_failures(failures, output_dir: Path) -> None:
     with failure_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["slide_id", "czi_path", "output_path", "returncode"],
+            fieldnames=["slide_id", "czi_path", "output_path", "scene_region", "returncode"],
         )
         writer.writeheader()
         writer.writerows(failures)
@@ -303,6 +376,18 @@ def main():
     if args.single_slide_id:
         if not args.single_czi_path or not args.single_output_path:
             raise ValueError("--single-slide-id requires --single-czi-path and --single-output-path")
+        single_region_values = [
+            args.single_scene_x,
+            args.single_scene_y,
+            args.single_scene_width,
+            args.single_scene_height,
+        ]
+        if all(value is None for value in single_region_values):
+            single_region = None
+        elif any(value is None for value in single_region_values):
+            raise ValueError("Single-slide scene conversion requires x, y, width, and height together")
+        else:
+            single_region = tuple(int(value) for value in single_region_values)
         status = convert_one_slide(
             czi_path=Path(args.single_czi_path),
             output_path=Path(args.single_output_path),
@@ -310,6 +395,7 @@ def main():
             overwrite=args.overwrite,
             downsample=args.downsample,
             compression=args.compression,
+            region=single_region,
         )
         print("Status:", status)
         return
@@ -326,7 +412,7 @@ def main():
     converted = 0
     skipped = 0
     failed = []
-    for index, (slide_id, czi_path) in enumerate(read_manifest(manifest_csv), start=1):
+    for index, (slide_id, czi_path, region) in enumerate(read_manifest(manifest_csv), start=1):
         if args.limit > 0 and converted >= args.limit:
             break
 
@@ -343,6 +429,7 @@ def main():
                 overwrite=args.overwrite,
                 downsample=args.downsample,
                 compression=args.compression,
+                region=region,
             )
             if result.returncode == 0:
                 if output_path.exists():
@@ -355,6 +442,7 @@ def main():
                         "slide_id": slide_id,
                         "czi_path": str(czi_path),
                         "output_path": str(output_path),
+                        "scene_region": str(region or ""),
                         "returncode": result.returncode,
                     }
                 )
@@ -368,6 +456,7 @@ def main():
             overwrite=args.overwrite,
             downsample=args.downsample,
             compression=args.compression,
+            region=region,
         )
         if status == "converted":
             converted += 1

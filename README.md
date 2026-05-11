@@ -92,26 +92,29 @@ pip install aicspylibczi
 pip install czifile
 ```
 
-如果两者都无法在服务器环境中正常读取 `.czi`，可使用扫描仪软件或其他病理图像工具先将 CZI 导出为全分辨率 TIFF，再放入 `/root/datasets/HZY_HSPN_export/images`，文件名需要与 manifest 中的 `slide_id` 对齐。
+如果服务器环境无法使用 `aicspylibczi` 裁剪 scene，可使用扫描仪软件或其他病理图像工具按 scene 导出 TIFF，再放入 `/root/datasets/HZY_HSPN_export_ds025/images`，文件名需要与 manifest 中的 `slide_id` 对齐。
 
 ## C. 从 slice.db 导出医生标注
 
-先将医生标注数据库转换为 GeoJSON：
+先将医生标注数据库转换为 GeoJSON。当前已确认医生标注坐标是 CZI mosaic 全局坐标，因此推荐直接按 scene 拆分导出，并同步生成 `0.25` 降采样坐标：
 
 ```bash
 python scripts/export_hzy_slice_db_annotations.py \
   --raw-root /root/datasets/HZY_HSPN_raw \
-  --output-dir /root/datasets/HZY_HSPN_export \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025 \
+  --split-scenes \
+  --coordinate-scale 0.25 \
   --overwrite
 ```
 
 该命令会生成：
 
 ```text
-/root/datasets/HZY_HSPN_export/
+/root/datasets/HZY_HSPN_export_ds025/
   annotations/
-    2026001.json
-    2026002.json
+    2026001_s0.json
+    2026002_s0.json
+    2026002_s1.json
     ...
   hzy_hspn_manifest.csv
   hzy_hspn_annotation_summary.json
@@ -119,16 +122,16 @@ python scripts/export_hzy_slice_db_annotations.py \
 
 其中：
 
-- `annotations/*.json`：医生 polygon 标注，供后续切 patch 使用。
-- `hzy_hspn_manifest.csv`：每例数据的 `slide_id`、`.czi` 路径、`slice.db` 路径和标注 JSON 路径。
+- `annotations/*.json`：scene 内坐标系下的医生 polygon 标注，供后续切 patch 使用。
+- `hzy_hspn_manifest.csv`：每个 scene 的 `slide_id`、`.czi` 路径、`slice.db` 路径、标注 JSON 路径和 scene region。
 - `hzy_hspn_annotation_summary.json`：标注数量和类别统计。
 
 检查导出结果：
 
 ```bash
-cat /root/datasets/HZY_HSPN_export/hzy_hspn_annotation_summary.json
-head -n 5 /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv
-ls /root/datasets/HZY_HSPN_export/annotations | head
+cat /root/datasets/HZY_HSPN_export_ds025/hzy_hspn_annotation_summary.json
+head -n 5 /root/datasets/HZY_HSPN_export_ds025/hzy_hspn_manifest.csv
+ls /root/datasets/HZY_HSPN_export_ds025/annotations | head
 ```
 
 默认只导出 `Mark_label_None` 表，因为本批数据中该表包含规范病理类别；`Mark_human` 中多为未分组的黄色人工痕迹，默认不纳入训练标注。如果后续确认 `Mark_human` 中有需要纳入的最终修订标注，可手动增加参数：
@@ -136,32 +139,24 @@ ls /root/datasets/HZY_HSPN_export/annotations | head
 ```bash
 python scripts/export_hzy_slice_db_annotations.py \
   --raw-root /root/datasets/HZY_HSPN_raw \
-  --output-dir /root/datasets/HZY_HSPN_export \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025 \
   --mark-tables Mark_label_None Mark_human \
+  --split-scenes \
+  --coordinate-scale 0.25 \
   --overwrite
 ```
 
 ## D. 将 CZI 转为 TIFF
 
-根据 manifest 将 `.czi` 转为可训练 `.tiff`。不建议直接导出全分辨率未降采样 TIFF，因为 CZI 内部通常是压缩/金字塔存储；展开成全分辨率 RGB BigTIFF 后，单张图可能达到数 GB 到十几 GB。本流程推荐先按 `0.25` 比例降采样，并同步缩放标注坐标。
-
-先重新导出降采样后的医生标注坐标：
-
-```bash
-python scripts/export_hzy_slice_db_annotations.py \
-  --raw-root /root/datasets/HZY_HSPN_raw \
-  --output-dir /root/datasets/HZY_HSPN_export_ds025 \
-  --coordinate-scale 0.25 \
-  --overwrite
-```
+根据 manifest 将 `.czi` 转为可训练 `.tiff`。manifest 中的每一行现在对应一个 scene，转换脚本会读取该行的 `scene_x / scene_y / scene_width / scene_height`，只导出该 scene 区域，避免整张 mosaic 的黑色空区混入训练。
 
 如果之前已经生成过未降采样的大 TIFF，建议删除后重新生成：
 
 ```bash
-rm -rf /root/datasets/HZY_HSPN_export/images
+rm -rf /root/datasets/HZY_HSPN_export_ds025/images
 ```
 
-建议先试转 1 张确认读取正常：
+建议先试转前 2 个 scene 确认读取正常：
 
 ```bash
 python scripts/convert_hzy_czi_to_tiff.py \
@@ -169,7 +164,7 @@ python scripts/convert_hzy_czi_to_tiff.py \
   --output-dir /root/datasets/HZY_HSPN_export_ds025/images \
   --downsample 0.25 \
   --isolate \
-  --limit 1 \
+  --limit 2 \
   --overwrite
 ```
 
@@ -194,9 +189,9 @@ find /root/datasets/HZY_HSPN_export_ds025/images -name "*.tiff" | wc -l
 
 ```text
 1. pip install aicspylibczi
-2. 若失败，尝试 pip install czifile
-3. 若仍失败，用扫描仪软件导出全分辨率 TIFF
-4. 保证 TIFF 文件名与 annotations/*.json 的 slide_id 一致
+2. scene 拆分依赖 aicspylibczi 的 read_mosaic(region=...)，czifile 不能替代 scene 裁剪
+3. 若仍失败，用扫描仪软件按 scene 导出 TIFF
+4. 保证 TIFF 文件名与 annotations/*.json 的 slide_id 一致，例如 2026002_s0.tiff / 2026002_s0.json
 5. 如果使用了 --downsample，必须在导出标注时使用相同的 --coordinate-scale
 ```
 
@@ -253,7 +248,7 @@ cat /root/datasets/HZY_HSPN_tiles_glom/manifests/summary.json
 ```text
 1. CZI 转出的 TIFF 是否为全分辨率图像，而不是 thumbnail 或 label 区域。
 2. TIFF 文件名是否与 annotations/*.json 的 slide_id 一致。
-3. 标注 polygon 坐标是否落在 TIFF 图像尺寸范围内。
+3. 标注 polygon 坐标是否落在 scene TIFF 图像尺寸范围内。
 4. --target-labels 是否与 hzy_hspn_annotation_summary.json 中的类别名完全一致。
 ```
 
@@ -356,8 +351,8 @@ Accuracy
 ```bash
 python predict_tiff.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_finetune_mask.png \
+  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_finetune_mask.png \
   --tile-size 1024 \
   --scale 0.5 \
   --classes 2 \
@@ -369,8 +364,8 @@ python predict_tiff.py \
 ```bash
 python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_enhanced_t07.png \
+  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_enhanced_t07.png \
   --tile-size 1024 \
   --scale 0.5 \
   --classes 2 \
@@ -382,8 +377,8 @@ python predict_hspn_enhanced.py \
 ```bash
 python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_enhanced_filtered.png \
+  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_enhanced_filtered.png \
   --tile-size 1024 \
   --scale 0.5 \
   --classes 2 \
@@ -414,8 +409,8 @@ python predict_hspn_enhanced.py \
 
 ```bash
 python scripts/prepare_hubmap_tiles.py \
-  --images-dir /root/datasets/HZY_HSPN_export/images \
-  --annotations-dir /root/datasets/HZY_HSPN_export/annotations \
+  --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
   --annotation-format json-polygons \
   --annotation-json-suffix .json \
   --target-labels 细胞性新月体 \
