@@ -1,5 +1,7 @@
 import argparse
 import csv
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -24,6 +26,32 @@ def parse_args():
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing TIFF files")
     parser.add_argument("--limit", type=int, default=0, help="Optional slide limit for quick conversion tests")
+    parser.add_argument(
+        "--downsample",
+        type=float,
+        default=1.0,
+        help=(
+            "Optional scale factor applied before saving TIFF. Use the same value as "
+            "export_hzy_slice_db_annotations.py --coordinate-scale to keep annotations aligned."
+        ),
+    )
+    parser.add_argument(
+        "--compression",
+        default="deflate",
+        choices=("none", "deflate", "zlib", "lzw"),
+        help="TIFF compression. Use deflate by default to avoid huge uncompressed TIFFs.",
+    )
+    parser.add_argument(
+        "--isolate",
+        action="store_true",
+        help=(
+            "Convert each CZI in a separate Python process. This is slower, but a native-reader "
+            "segmentation fault on one slide will not stop the whole batch."
+        ),
+    )
+    parser.add_argument("--single-slide-id", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--single-czi-path", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--single-output-path", default="", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -163,17 +191,110 @@ def read_czi(czi_path: Path, reader: str) -> np.ndarray:
     )
 
 
-def write_tiff(image: np.ndarray, output_path: Path) -> None:
+def resize_image(image: np.ndarray, downsample: float) -> np.ndarray:
+    if downsample == 1.0:
+        return image
+    if not (0 < downsample <= 1.0):
+        raise ValueError("--downsample must be in the interval (0, 1].")
+
+    from PIL import Image
+
+    height, width = image.shape[:2]
+    new_width = max(1, int(round(width * downsample)))
+    new_height = max(1, int(round(height * downsample)))
+    pil_image = Image.fromarray(image)
+    pil_image = pil_image.resize((new_width, new_height), resample=Image.BICUBIC)
+    return np.asarray(pil_image)
+
+
+def write_tiff(image: np.ndarray, output_path: Path, compression: str) -> None:
     import tifffile
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    compression_arg = None if compression == "none" else compression
     tifffile.imwrite(
         str(output_path),
         image,
         bigtiff=True,
         photometric="rgb",
+        compression=compression_arg,
         metadata=None,
     )
+
+
+def convert_one_slide(
+    czi_path: Path,
+    output_path: Path,
+    reader: str,
+    overwrite: bool,
+    downsample: float,
+    compression: str,
+) -> str:
+    if output_path.exists() and not overwrite:
+        print("[skip] {} already exists".format(output_path))
+        return "skipped"
+
+    print("Reading {}".format(czi_path))
+    image = ensure_rgb(read_czi(czi_path, reader))
+    original_shape = image.shape
+    image = resize_image(image, downsample)
+    print(
+        "Writing {} with shape {} from original shape {}, compression={}".format(
+            output_path,
+            image.shape,
+            original_shape,
+            compression,
+        )
+    )
+    write_tiff(image, output_path, compression=compression)
+    return "converted"
+
+
+def run_isolated_child(
+    script_path: Path,
+    slide_id: str,
+    czi_path: Path,
+    output_path: Path,
+    reader: str,
+    overwrite: bool,
+    downsample: float,
+    compression: str,
+):
+    command = [
+        sys.executable,
+        str(script_path),
+        "--single-slide-id",
+        slide_id,
+        "--single-czi-path",
+        str(czi_path),
+        "--single-output-path",
+        str(output_path),
+        "--reader",
+        reader,
+        "--downsample",
+        str(downsample),
+        "--compression",
+        compression,
+    ]
+    if overwrite:
+        command.append("--overwrite")
+    return subprocess.run(command)
+
+
+def write_failures(failures, output_dir: Path) -> None:
+    if not failures:
+        return
+
+    failure_path = output_dir / "conversion_failures.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with failure_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["slide_id", "czi_path", "output_path", "returncode"],
+        )
+        writer.writeheader()
+        writer.writerows(failures)
+    print("Failures:", failure_path)
 
 
 def main():
@@ -181,29 +302,78 @@ def main():
     manifest_csv = Path(args.manifest_csv)
     output_dir = Path(args.output_dir)
 
+    if args.single_slide_id:
+        if not args.single_czi_path or not args.single_output_path:
+            raise ValueError("--single-slide-id requires --single-czi-path and --single-output-path")
+        status = convert_one_slide(
+            czi_path=Path(args.single_czi_path),
+            output_path=Path(args.single_output_path),
+            reader=args.reader,
+            overwrite=args.overwrite,
+            downsample=args.downsample,
+            compression=args.compression,
+        )
+        print("Status:", status)
+        return
+
     if not manifest_csv.exists():
         raise FileNotFoundError("Manifest CSV does not exist: {}".format(manifest_csv))
 
     converted = 0
     skipped = 0
+    failed = []
     for index, (slide_id, czi_path) in enumerate(read_manifest(manifest_csv), start=1):
         if args.limit > 0 and converted >= args.limit:
             break
 
         output_path = output_dir / "{}.tiff".format(slide_id)
-        if output_path.exists() and not args.overwrite:
-            print("[skip] {} already exists".format(output_path))
-            skipped += 1
+        print("[{}] slide_id={}".format(index, slide_id))
+
+        if args.isolate:
+            result = run_isolated_child(
+                script_path=Path(__file__).resolve(),
+                slide_id=slide_id,
+                czi_path=czi_path,
+                output_path=output_path,
+                reader=args.reader,
+                overwrite=args.overwrite,
+                downsample=args.downsample,
+                compression=args.compression,
+            )
+            if result.returncode == 0:
+                if output_path.exists():
+                    converted += 1
+                else:
+                    skipped += 1
+            else:
+                failed.append(
+                    {
+                        "slide_id": slide_id,
+                        "czi_path": str(czi_path),
+                        "output_path": str(output_path),
+                        "returncode": result.returncode,
+                    }
+                )
+                print("[failed] {} returncode={}".format(slide_id, result.returncode))
             continue
 
-        print("[{}] Reading {}".format(index, czi_path))
-        image = ensure_rgb(read_czi(czi_path, args.reader))
-        print("    Writing {} with shape {}".format(output_path, image.shape))
-        write_tiff(image, output_path)
-        converted += 1
+        status = convert_one_slide(
+            czi_path=czi_path,
+            output_path=output_path,
+            reader=args.reader,
+            overwrite=args.overwrite,
+            downsample=args.downsample,
+            compression=args.compression,
+        )
+        if status == "converted":
+            converted += 1
+        else:
+            skipped += 1
 
     print("Converted:", converted)
     print("Skipped:", skipped)
+    print("Failed:", len(failed))
+    write_failures(failed, output_dir)
     print("Output directory:", output_dir)
 
 

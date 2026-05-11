@@ -143,29 +143,51 @@ python scripts/export_hzy_slice_db_annotations.py \
 
 ## D. 将 CZI 转为 TIFF
 
-根据 manifest 将 `.czi` 转为 `.tiff`：
+根据 manifest 将 `.czi` 转为可训练 `.tiff`。不建议直接导出全分辨率未降采样 TIFF，因为 CZI 内部通常是压缩/金字塔存储；展开成全分辨率 RGB BigTIFF 后，单张图可能达到数 GB 到十几 GB。本流程推荐先按 `0.25` 比例降采样，并同步缩放标注坐标。
+
+先重新导出降采样后的医生标注坐标：
 
 ```bash
-python scripts/convert_hzy_czi_to_tiff.py \
-  --manifest-csv /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv \
-  --output-dir /root/datasets/HZY_HSPN_export/images \
+python scripts/export_hzy_slice_db_annotations.py \
+  --raw-root /root/datasets/HZY_HSPN_raw \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025 \
+  --coordinate-scale 0.25 \
   --overwrite
+```
+
+如果之前已经生成过未降采样的大 TIFF，建议删除后重新生成：
+
+```bash
+rm -rf /root/datasets/HZY_HSPN_export/images
 ```
 
 建议先试转 1 张确认读取正常：
 
 ```bash
 python scripts/convert_hzy_czi_to_tiff.py \
-  --manifest-csv /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv \
-  --output-dir /root/datasets/HZY_HSPN_export/images \
+  --manifest-csv /root/datasets/HZY_HSPN_export_ds025/hzy_hspn_manifest.csv \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --downsample 0.25 \
+  --isolate \
   --limit 1 \
   --overwrite
 ```
 
-确认没有问题后再全量转换。转换完成后检查：
+确认没有问题后再全量转换：
 
 ```bash
-find /root/datasets/HZY_HSPN_export/images -name "*.tiff" | wc -l
+python scripts/convert_hzy_czi_to_tiff.py \
+  --manifest-csv /root/datasets/HZY_HSPN_export_ds025/hzy_hspn_manifest.csv \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --downsample 0.25 \
+  --isolate \
+  --overwrite
+```
+
+转换完成后检查：
+
+```bash
+find /root/datasets/HZY_HSPN_export_ds025/images -name "*.tiff" | wc -l
 ```
 
 如果 CZI 读取失败，通常是服务器缺少可用的 CZI 解析库。处理顺序建议为：
@@ -175,6 +197,13 @@ find /root/datasets/HZY_HSPN_export/images -name "*.tiff" | wc -l
 2. 若失败，尝试 pip install czifile
 3. 若仍失败，用扫描仪软件导出全分辨率 TIFF
 4. 保证 TIFF 文件名与 annotations/*.json 的 slide_id 一致
+5. 如果使用了 --downsample，必须在导出标注时使用相同的 --coordinate-scale
+```
+
+如果全量转换过程中出现 `Segmentation fault (core dumped)`，通常是某一张 CZI 触发底层 CZI 读取库崩溃。请使用 `--isolate` 模式逐张子进程转换；这样单张失败不会中断整批转换，失败样本会写入：
+
+```text
+/root/datasets/HZY_HSPN_export_ds025/images/conversion_failures.csv
 ```
 
 ## E. 生成院内肾小球分割 tiles
@@ -190,8 +219,8 @@ find /root/datasets/HZY_HSPN_export/images -name "*.tiff" | wc -l
 
 ```bash
 python scripts/prepare_hubmap_tiles.py \
-  --images-dir /root/datasets/HZY_HSPN_export/images \
-  --annotations-dir /root/datasets/HZY_HSPN_export/annotations \
+  --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
   --annotation-format json-polygons \
   --annotation-json-suffix .json \
   --target-labels 未废弃肾小球 废弃肾小球 肾小球 \

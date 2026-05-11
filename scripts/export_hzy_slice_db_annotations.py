@@ -43,6 +43,15 @@ def parse_args():
         action="store_true",
         help="Overwrite existing annotation JSON and manifest files",
     )
+    parser.add_argument(
+        "--coordinate-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale factor applied to exported polygon coordinates. Use the same value as "
+            "convert_hzy_czi_to_tiff.py --downsample when converting downsampled TIFFs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -136,7 +145,7 @@ def labels_for_mark(group_ids: Sequence[int], group_names: Dict[int, str], remar
     return [color_label] if color_label else []
 
 
-def parse_polygon_position(position_text: str) -> Optional[List[List[float]]]:
+def parse_polygon_position(position_text: str, coordinate_scale: float = 1.0) -> Optional[List[List[float]]]:
     if not position_text:
         return None
 
@@ -149,7 +158,7 @@ def parse_polygon_position(position_text: str) -> Optional[List[List[float]]]:
     if isinstance(data, dict) and isinstance(data.get("x"), list) and isinstance(data.get("y"), list):
         for x_value, y_value in zip(data["x"], data["y"]):
             try:
-                points.append([float(x_value), float(y_value)])
+                points.append([float(x_value) * coordinate_scale, float(y_value) * coordinate_scale])
             except (TypeError, ValueError):
                 continue
     elif isinstance(data, list):
@@ -162,7 +171,7 @@ def parse_polygon_position(position_text: str) -> Optional[List[List[float]]]:
             else:
                 continue
             try:
-                points.append([float(x_value), float(y_value)])
+                points.append([float(x_value) * coordinate_scale, float(y_value) * coordinate_scale])
             except (TypeError, ValueError):
                 continue
 
@@ -204,7 +213,13 @@ def iter_mark_rows(cursor: sqlite3.Cursor, mark_tables: Iterable[str]):
             yield payload
 
 
-def export_db_annotations(db_path: Path, czi_path: Optional[Path], slide_id: str, mark_tables: Sequence[str]):
+def export_db_annotations(
+    db_path: Path,
+    czi_path: Optional[Path],
+    slide_id: str,
+    mark_tables: Sequence[str],
+    coordinate_scale: float,
+):
     connection = sqlite3.connect(str(db_path))
     cursor = connection.cursor()
     group_names = load_mark_groups(cursor)
@@ -214,7 +229,7 @@ def export_db_annotations(db_path: Path, czi_path: Optional[Path], slide_id: str
     skipped_rows = 0
 
     for row in iter_mark_rows(cursor, mark_tables):
-        polygon = parse_polygon_position(row.get("position"))
+        polygon = parse_polygon_position(row.get("position"), coordinate_scale=coordinate_scale)
         if polygon is None:
             skipped_rows += 1
             continue
@@ -259,6 +274,7 @@ def export_db_annotations(db_path: Path, czi_path: Optional[Path], slide_id: str
             "source_db": str(db_path),
             "source_czi": str(czi_path) if czi_path else "",
             "mark_tables": list(mark_tables),
+            "coordinate_scale": coordinate_scale,
             "label_counts": dict(label_counts),
             "skipped_rows": skipped_rows,
         },
@@ -311,6 +327,7 @@ def main():
             czi_path=czi_path,
             slide_id=slide_id,
             mark_tables=args.mark_tables,
+            coordinate_scale=args.coordinate_scale,
         )
 
         annotation_path = annotations_dir / "{}.json".format(slide_id)
@@ -338,6 +355,7 @@ def main():
         "output_dir": str(output_dir),
         "slide_count": len(manifest_rows),
         "feature_count": sum(int(row["feature_count"]) for row in manifest_rows),
+        "coordinate_scale": args.coordinate_scale,
         "label_counts": dict(global_label_counts),
         "manifest": str(manifest_path),
         "annotations_dir": str(annotations_dir),
