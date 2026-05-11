@@ -1,4 +1,419 @@
-﻿# HuBMAP 肾小球分割工程说明
+﻿# 2026-05-11 院内 HSPN 标注数据继续训练日志
+
+本次更新新增了院内紫癜性肾炎（HSPN）标注数据接入流程，目标是在原 HuBMAP 肾小球分割基线模型基础上，继续使用医生标注的院内数据进行微调训练。医生提供的数据不是现成的 `image + mask` 结构，而是每例包含 `.czi` 原始扫描文件和 `slice.db` 标注数据库，因此本次补充了两个脚本：
+
+- `scripts/export_hzy_slice_db_annotations.py`
+  - 从每个 `slice.db` 中读取医生 polygon 标注，导出为 `prepare_hubmap_tiles.py` 可读取的 GeoJSON 标注。
+- `scripts/convert_hzy_czi_to_tiff.py`
+  - 按导出的 manifest 将 `.czi` 原始图转换为与标注同名的 `.tiff` 图像。
+
+本地检查当前数据集时，`label.png` / `slice_label.jpg` 被确认只是医院玻片标签或标签框预览，不是训练 mask；真正可用于训练的医生标注位于 `slice.db` 中。当前 `slice.db` 中已识别到的规范标注类别包括：
+
+```text
+未废弃肾小球
+废弃肾小球
+毛细血管内细胞增生
+肾小球系膜细胞增生
+细胞性新月体
+纤维细胞性新月体
+纤维性新月体
+节段硬化
+节段球囊粘连
+纤维素样坏死
+纤维素性血栓
+```
+
+本地脚本验证结果：共检测到 `52` 个 `slice.db`，成功导出 `52` 例标注 JSON，共 `1946` 个规范 polygon 标注。其中主要类别数量如下：
+
+```text
+未废弃肾小球：1287
+废弃肾小球：33
+肾小球系膜细胞增生：300
+毛细血管内细胞增生：162
+细胞性新月体：51
+纤维细胞性新月体：42
+纤维性新月体：20
+节段硬化：30
+节段球囊粘连：16
+纤维素样坏死：4
+纤维素性血栓：1
+```
+
+## A. 服务器数据放置
+
+上传医生原始数据时，建议保持原始层级不变：
+
+```text
+/root/datasets/HZY_HSPN_raw/
+  data/
+    2026_03_10_11_41_01_153748/
+      slices/
+        202603101139282630/
+          2026001.czi
+          slice.db
+          label.png
+          slice_label.jpg
+          thumbnail.jpeg
+```
+
+上传后先检查数量：
+
+```bash
+find /root/datasets/HZY_HSPN_raw -name "*.czi" | wc -l
+find /root/datasets/HZY_HSPN_raw -name "slice.db" | wc -l
+```
+
+当前本地数据预期约为：
+
+```text
+52 个 .czi
+52 个 slice.db
+```
+
+## B. 安装环境与可选 CZI 读取依赖
+
+进入服务器项目目录：
+
+```bash
+cd /root/Pytorch-UNet/Pytorch-UNet-master
+conda activate unet_kidney
+pip install -r requirements.txt
+```
+
+`.czi` 读取依赖不是原 HuBMAP 流程的必需项，因此没有强制写入 `requirements.txt`。如果服务器无法直接读取 CZI，优先安装：
+
+```bash
+pip install aicspylibczi
+```
+
+如果 `aicspylibczi` 安装失败，也可以尝试：
+
+```bash
+pip install czifile
+```
+
+如果两者都无法在服务器环境中正常读取 `.czi`，可使用扫描仪软件或其他病理图像工具先将 CZI 导出为全分辨率 TIFF，再放入 `/root/datasets/HZY_HSPN_export/images`，文件名需要与 manifest 中的 `slide_id` 对齐。
+
+## C. 从 slice.db 导出医生标注
+
+先将医生标注数据库转换为 GeoJSON：
+
+```bash
+python scripts/export_hzy_slice_db_annotations.py \
+  --raw-root /root/datasets/HZY_HSPN_raw \
+  --output-dir /root/datasets/HZY_HSPN_export \
+  --overwrite
+```
+
+该命令会生成：
+
+```text
+/root/datasets/HZY_HSPN_export/
+  annotations/
+    2026001.json
+    2026002.json
+    ...
+  hzy_hspn_manifest.csv
+  hzy_hspn_annotation_summary.json
+```
+
+其中：
+
+- `annotations/*.json`：医生 polygon 标注，供后续切 patch 使用。
+- `hzy_hspn_manifest.csv`：每例数据的 `slide_id`、`.czi` 路径、`slice.db` 路径和标注 JSON 路径。
+- `hzy_hspn_annotation_summary.json`：标注数量和类别统计。
+
+检查导出结果：
+
+```bash
+cat /root/datasets/HZY_HSPN_export/hzy_hspn_annotation_summary.json
+head -n 5 /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv
+ls /root/datasets/HZY_HSPN_export/annotations | head
+```
+
+默认只导出 `Mark_label_None` 表，因为本批数据中该表包含规范病理类别；`Mark_human` 中多为未分组的黄色人工痕迹，默认不纳入训练标注。如果后续确认 `Mark_human` 中有需要纳入的最终修订标注，可手动增加参数：
+
+```bash
+python scripts/export_hzy_slice_db_annotations.py \
+  --raw-root /root/datasets/HZY_HSPN_raw \
+  --output-dir /root/datasets/HZY_HSPN_export \
+  --mark-tables Mark_label_None Mark_human \
+  --overwrite
+```
+
+## D. 将 CZI 转为 TIFF
+
+根据 manifest 将 `.czi` 转为 `.tiff`：
+
+```bash
+python scripts/convert_hzy_czi_to_tiff.py \
+  --manifest-csv /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv \
+  --output-dir /root/datasets/HZY_HSPN_export/images \
+  --overwrite
+```
+
+建议先试转 1 张确认读取正常：
+
+```bash
+python scripts/convert_hzy_czi_to_tiff.py \
+  --manifest-csv /root/datasets/HZY_HSPN_export/hzy_hspn_manifest.csv \
+  --output-dir /root/datasets/HZY_HSPN_export/images \
+  --limit 1 \
+  --overwrite
+```
+
+确认没有问题后再全量转换。转换完成后检查：
+
+```bash
+find /root/datasets/HZY_HSPN_export/images -name "*.tiff" | wc -l
+```
+
+如果 CZI 读取失败，通常是服务器缺少可用的 CZI 解析库。处理顺序建议为：
+
+```text
+1. pip install aicspylibczi
+2. 若失败，尝试 pip install czifile
+3. 若仍失败，用扫描仪软件导出全分辨率 TIFF
+4. 保证 TIFF 文件名与 annotations/*.json 的 slide_id 一致
+```
+
+## E. 生成院内肾小球分割 tiles
+
+当前建议先做“肾小球二分类分割微调”，即：
+
+```text
+前景：未废弃肾小球 + 废弃肾小球 + 肾小球
+背景：其他组织和背景区域
+```
+
+因为本批院内数据没有 HuBMAP 那种 anatomical structure JSON，所以这里不使用 `--roi-labels Cortex`，只使用组织覆盖率和正负样本比例控制。
+
+```bash
+python scripts/prepare_hubmap_tiles.py \
+  --images-dir /root/datasets/HZY_HSPN_export/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export/annotations \
+  --annotation-format json-polygons \
+  --annotation-json-suffix .json \
+  --target-labels 未废弃肾小球 废弃肾小球 肾小球 \
+  --output-dir /root/datasets/HZY_HSPN_tiles_glom \
+  --tile-size 1024 \
+  --stride 1024 \
+  --val-ratio 0.2 \
+  --min-tissue-coverage 0.05 \
+  --min-positive-pixels 64 \
+  --negative-ratio 2.0
+```
+
+说明：
+
+- `--tile-size 1024 --stride 1024` 与 HuBMAP 基线保持一致。
+- 训练时继续使用 `--scale 0.5`，因此模型实际输入约为 `512 x 512`。
+- `--val-ratio 0.2` 表示按 slide 级别约 `8:2` 划分训练集和验证集。
+- `--negative-ratio 2.0` 表示每个正样本最多保留约 2 个负样本。
+
+生成后检查：
+
+```bash
+find /root/datasets/HZY_HSPN_tiles_glom/train/images -name "*.jpg" | wc -l
+find /root/datasets/HZY_HSPN_tiles_glom/val/images -name "*.jpg" | wc -l
+cat /root/datasets/HZY_HSPN_tiles_glom/manifests/summary.json
+```
+
+如果 `summary.json` 中 `positive_tiles` 为 0，或者日志提示多数 slide 没有阳性 patch，优先检查以下问题：
+
+```text
+1. CZI 转出的 TIFF 是否为全分辨率图像，而不是 thumbnail 或 label 区域。
+2. TIFF 文件名是否与 annotations/*.json 的 slide_id 一致。
+3. 标注 polygon 坐标是否落在 TIFF 图像尺寸范围内。
+4. --target-labels 是否与 hzy_hspn_annotation_summary.json 中的类别名完全一致。
+```
+
+## F. 基于 HuBMAP best.pth 继续微调
+
+建议不要从零训练，而是加载 HuBMAP 训练得到的 `best.pth` 作为预训练权重，在院内数据上低学习率微调：
+
+```bash
+python train.py \
+  --load /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
+  --images-dir /root/datasets/HZY_HSPN_tiles_glom/train/images \
+  --masks-dir /root/datasets/HZY_HSPN_tiles_glom/train/masks \
+  --val-images-dir /root/datasets/HZY_HSPN_tiles_glom/val/images \
+  --val-masks-dir /root/datasets/HZY_HSPN_tiles_glom/val/masks \
+  --epochs 30 \
+  --batch-size 2 \
+  --learning-rate 5e-6 \
+  --scale 0.5 \
+  --classes 2 \
+  --amp \
+  --optimizer adamw \
+  --num-workers 16 \
+  --prefetch-factor 4 \
+  --compile auto \
+  --checkpoint-metric dice \
+  --analysis-frequency 5 \
+  --preview-frequency 5 \
+  --wandb-mode disabled \
+  --checkpoint-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom
+```
+
+训练输出目录：
+
+```text
+/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/
+  best.pth
+  latest.pth
+  analysis/
+    history.csv
+    training_curves.png
+    best_preview.png
+    best_metrics.json
+    val_previews/
+```
+
+如果显存不足，可优先尝试：
+
+```bash
+--batch-size 1
+```
+
+如果 `torch.compile` 兼容性不好，可关闭：
+
+```bash
+--compile off
+```
+
+## G. 院内验证集评估
+
+训练完成后，对院内验证集上的最佳权重做独立评估：
+
+```bash
+python evaluate_checkpoint.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
+  --images-dir /root/datasets/HZY_HSPN_tiles_glom/val/images \
+  --masks-dir /root/datasets/HZY_HSPN_tiles_glom/val/masks \
+  --classes 2 \
+  --batch-size 2 \
+  --num-workers 8 \
+  --scale 0.5 \
+  --amp \
+  --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/eval_best
+```
+
+输出内容：
+
+```text
+/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/eval_best/
+  metrics.json
+  preview.png
+```
+
+重点查看：
+
+```text
+Dice
+IoU
+Precision
+Recall
+Specificity
+Accuracy
+```
+
+其中 Dice、IoU、Precision、Recall 更适合汇报；Accuracy 容易受大量背景像素影响，只作为辅助参考。
+
+## H. 使用微调后的模型做院内大图推理
+
+如果需要对转换后的院内 TIFF 做整图推理，可先选择一张图测试：
+
+```bash
+python predict_tiff.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
+  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_finetune_mask.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5
+```
+
+如果 direct 推理仍然偏保守或有明显假阳性，可继续比较：
+
+```bash
+python predict_hspn_enhanced.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
+  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_enhanced_t07.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.7
+```
+
+或使用过滤版：
+
+```bash
+python predict_hspn_enhanced.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
+  --input /root/datasets/HZY_HSPN_export/images/2026001.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_hzy_enhanced_filtered.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.7 \
+  --apply-tissue-mask \
+  --min-component-area 150 \
+  --max-component-area 30000 \
+  --max-component-extent 384
+```
+
+## I. 后续病变量化任务的扩展方式
+
+本次微调优先解决“院内肾小球分割”问题。等基础分割稳定后，可利用同一批 `slice.db` 中的病变标注继续开展病变量化。当前脚本已经能导出以下病变 polygon：
+
+```text
+毛细血管内细胞增生
+肾小球系膜细胞增生
+细胞性新月体
+纤维细胞性新月体
+纤维性新月体
+节段硬化
+节段球囊粘连
+纤维素样坏死
+纤维素性血栓
+```
+
+当前 `prepare_hubmap_tiles.py` 仍是二值 mask 生成逻辑，因此短期内可采用“每类病变单独训练一个二分类模型”的方式。例如训练细胞性新月体分割：
+
+```bash
+python scripts/prepare_hubmap_tiles.py \
+  --images-dir /root/datasets/HZY_HSPN_export/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export/annotations \
+  --annotation-format json-polygons \
+  --annotation-json-suffix .json \
+  --target-labels 细胞性新月体 \
+  --output-dir /root/datasets/HZY_HSPN_tiles_crescent_cellular \
+  --tile-size 1024 \
+  --stride 1024 \
+  --val-ratio 0.2 \
+  --min-tissue-coverage 0.05 \
+  --min-positive-pixels 32 \
+  --negative-ratio 3.0
+```
+
+未来如果要同时识别多种病变，建议进一步改造为多类别或多标签分割任务，并补充实例级统计逻辑，例如：
+
+```text
+单张 WSI 肾小球总数
+废弃肾小球比例
+新月体肾小球比例
+节段硬化比例
+系膜增生相关区域比例
+毛细血管内细胞增生区域比例
+病变肾小球占比
+```
+
+---
+
+# HuBMAP 肾小球分割工程说明
 
 该仓库是在 PyTorch U-Net 基础上，针对 HuBMAP 肾脏病理数据改造的肾小球分割工程化版本，面向 Linux 服务器训练与推理流程。
 
