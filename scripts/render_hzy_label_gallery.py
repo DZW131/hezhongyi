@@ -3,6 +3,7 @@ import csv
 import json
 import random
 import re
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -55,6 +56,11 @@ def parse_args():
     parser.add_argument("--jpeg-quality", type=int, default=96, help="Output JPG quality")
     parser.add_argument("--seed", type=int, default=42, help="Random sampling seed")
     parser.add_argument(
+        "--font-path",
+        default="",
+        help="Optional CJK font path for rendering Chinese labels, for example NotoSansCJK-Regular.ttc.",
+    )
+    parser.add_argument(
         "--slide-ids",
         nargs="*",
         default=[],
@@ -103,23 +109,66 @@ def normalize_rgb(array: np.ndarray) -> np.ndarray:
     return np.clip(array, 0, 255).astype(np.uint8)
 
 
-def load_font(size: int = 22):
+def find_font_with_fc_match(font_names: Sequence[str]) -> List[str]:
+    paths = []
+    for font_name in font_names:
+        try:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}", font_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, ValueError):
+            continue
+        path = result.stdout.strip()
+        if path:
+            paths.append(path)
+    return paths
+
+
+def load_font(size: int = 22, font_path: str = ""):
+    if font_path:
+        path = Path(font_path)
+        if not path.exists():
+            raise FileNotFoundError("Font path does not exist: {}".format(path))
+        return ImageFont.truetype(str(path), size=size)
+
     candidates = [
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/truetype/arphic/ukai.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
+    candidates.extend(
+        find_font_with_fc_match(
+            [
+                "Noto Sans CJK SC",
+                "Noto Sans CJK",
+                "WenQuanYi Micro Hei",
+                "WenQuanYi Zen Hei",
+                "SimHei",
+                "Microsoft YaHei",
+            ]
+        )
+    )
+    candidates.append("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
     for candidate in candidates:
         path = Path(candidate)
         if path.exists():
             try:
-                return ImageFont.truetype(str(path), size=size)
+                font = ImageFont.truetype(str(path), size=size)
+                print("Using font:", path)
+                return font
             except OSError:
                 continue
+    print("[warning] No TrueType CJK font found. Chinese labels may render incorrectly.")
     return ImageFont.load_default()
 
 
@@ -387,7 +436,7 @@ def main():
 
     import tifffile
 
-    font = load_font(size=22)
+    font = load_font(size=22, font_path=args.font_path)
     summary_rows = []
     for slide_index, (slide_id, items) in enumerate(sorted(selected_by_slide.items()), start=1):
         image_path = images_dir / "{}{}".format(slide_id, args.image_suffix)

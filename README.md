@@ -434,6 +434,21 @@ python scripts/render_hzy_label_gallery.py \
 
 输出目录中会包含 `label_color_legend.jpg`、每类 `gallery_*.jpg` 以及对应的局部 crop 文件夹。不同病变类别会使用不同颜色标出。
 
+如果图例中的中文显示为乱码或方块，请先安装中文字体后重新运行：
+
+```bash
+apt-get update
+apt-get install -y fonts-noto-cjk fonts-wqy-microhei
+fc-cache -fv
+```
+
+也可以显式指定字体路径：
+
+```bash
+python scripts/render_hzy_label_gallery.py \
+  --font-path /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+```
+
 ```bash
 python scripts/prepare_hubmap_tiles.py \
   --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
