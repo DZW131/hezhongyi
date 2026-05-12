@@ -421,6 +421,19 @@ python scripts/render_hzy_gt_pred_overlay.py \
 
 当前 `prepare_hubmap_tiles.py` 仍是二值 mask 生成逻辑，因此短期内可采用“每类病变单独训练一个二分类模型”的方式。例如训练细胞性新月体分割：
 
+在训练病变模型前，建议先生成各类别局部可视化图集，快速熟悉每类病变在图中的形态：
+
+```bash
+python scripts/render_hzy_label_gallery.py \
+  --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
+  --output-dir /root/datasets/HZY_HSPN_export_ds025/debug_label_gallery_color \
+  --max-per-label 24 \
+  --pad 512
+```
+
+输出目录中会包含 `label_color_legend.jpg`、每类 `gallery_*.jpg` 以及对应的局部 crop 文件夹。不同病变类别会使用不同颜色标出。
+
 ```bash
 python scripts/prepare_hubmap_tiles.py \
   --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
