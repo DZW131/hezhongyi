@@ -54,6 +54,8 @@ def predict_hspn_with_stain_norm(
     scale_factor=1.0,
     apply_tissue_mask=False,
     white_threshold=230.0,
+    fill_holes=False,
+    closing_radius=0,
     min_component_area=0,
     max_component_area=0,
     max_component_extent=0,
@@ -130,6 +132,8 @@ def predict_hspn_with_stain_norm(
                     mask_tile = apply_binary_postprocessing(
                         mask_tile,
                         tissue_mask=tissue_mask,
+                        fill_holes=fill_holes,
+                        closing_radius=closing_radius,
                         min_component_area=min_component_area,
                         max_component_area=max_component_area,
                         max_component_extent=max_component_extent,
@@ -153,6 +157,10 @@ def get_args():
                         help='Keep predictions only inside non-white tissue regions estimated from the raw tile')
     parser.add_argument('--white-threshold', type=float, default=230.0,
                         help='Intensity threshold used to estimate non-white tissue for postprocessing')
+    parser.add_argument('--fill-holes', action='store_true', default=False,
+                        help='Fill holes inside each predicted binary mask tile')
+    parser.add_argument('--closing-radius', type=int, default=0,
+                        help='Morphological closing radius used to fill small gaps in predicted masks')
     parser.add_argument('--min-component-area', type=int, default=0,
                         help='Discard connected components smaller than this many pixels')
     parser.add_argument('--max-component-area', type=int, default=0,
@@ -187,6 +195,8 @@ if __name__ == '__main__':
                                             scale_factor=args.scale,
                                             apply_tissue_mask=args.apply_tissue_mask,
                                             white_threshold=args.white_threshold,
+                                            fill_holes=args.fill_holes,
+                                            closing_radius=args.closing_radius,
                                             min_component_area=args.min_component_area,
                                             max_component_area=args.max_component_area,
                                             max_component_extent=args.max_component_extent)

@@ -389,6 +389,25 @@ python predict_hspn_enhanced.py \
   --max-component-extent 384
 ```
 
+如果预测 mask 内部出现小黑洞或小裂缝，可额外开启填洞和闭运算后处理：
+
+```bash
+python predict_hspn_enhanced.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025/2026001_s0_pred_mask_postfill.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5 \
+  --apply-tissue-mask \
+  --fill-holes \
+  --closing-radius 3 \
+  --min-component-area 300 \
+  --max-component-area 60000 \
+  --max-component-extent 500
+```
+
 生成“原图 + 医生标注 + 模型预测”的叠加图：
 
 ```bash
