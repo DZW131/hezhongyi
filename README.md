@@ -346,66 +346,66 @@ Accuracy
 
 ## H. 使用微调后的模型做院内大图推理
 
-如果需要对转换后的院内 TIFF 做整图推理，可先选择一张图测试：
+如果需要对转换后的院内 TIFF 做整图推理，可先选择一张图测试。当前院内模型推荐使用 `predict_tiff.py`，并在整图 mask 拼接完成后启用后处理：
 
 ```bash
+mkdir -p /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025
+
 python predict_tiff.py \
-  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_finetune_mask.png \
-  --tile-size 1024 \
-  --scale 0.5 \
-  --classes 2 \
-  --threshold 0.5
-```
-
-如果 direct 推理仍然偏保守或有明显假阳性，可继续比较：
-
-```bash
-python predict_hspn_enhanced.py \
-  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_enhanced_t07.png \
-  --tile-size 1024 \
-  --scale 0.5 \
-  --classes 2 \
-  --threshold 0.7
-```
-
-或使用过滤版：
-
-```bash
-python predict_hspn_enhanced.py \
-  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom/best.pth \
-  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/2026001_s0_hzy_enhanced_filtered.png \
-  --tile-size 1024 \
-  --scale 0.5 \
-  --classes 2 \
-  --threshold 0.7 \
-  --apply-tissue-mask \
-  --min-component-area 150 \
-  --max-component-area 30000 \
-  --max-component-extent 384
-```
-
-如果预测 mask 内部出现小黑洞或小裂缝，可额外开启填洞和闭运算后处理：
-
-```bash
-python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
   --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025/2026001_s0_pred_mask_postfill.png \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025/2026001_s0_pred_mask_post.png \
   --tile-size 1024 \
   --scale 0.5 \
   --classes 2 \
   --threshold 0.5 \
+  --postprocess \
   --apply-tissue-mask \
+  --black-threshold 8 \
   --fill-holes \
   --closing-radius 3 \
+  --opening-radius 1 \
   --min-component-area 300 \
   --max-component-area 60000 \
-  --max-component-extent 500
+  --max-component-extent 600
+```
+
+后处理参数含义：
+
+```text
+--fill-holes：填补肾小球 mask 内部空洞。
+--closing-radius：闭运算半径，补小裂缝和小缺口；过大可能加重粘连。
+--opening-radius：开运算半径，去掉细小毛刺；过大可能侵蚀边界。
+--min-component-area：删除小碎片噪声。
+--max-component-area / --max-component-extent：删除异常大误检。
+--black-threshold：配合 --apply-tissue-mask 排除 CZI 拼接出来的近黑空区。
+--split-touching：可选，尝试把明显粘连的肾小球连通域拆开。
+```
+
+如果出现相邻肾小球粘连，可另存一个分离版本做比较：
+
+```bash
+python predict_tiff.py \
+  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
+  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025/2026001_s0_pred_mask_post_split.png \
+  --tile-size 1024 \
+  --scale 0.5 \
+  --classes 2 \
+  --threshold 0.5 \
+  --postprocess \
+  --apply-tissue-mask \
+  --black-threshold 8 \
+  --fill-holes \
+  --closing-radius 2 \
+  --opening-radius 1 \
+  --min-component-area 300 \
+  --max-component-area 60000 \
+  --max-component-extent 600 \
+  --split-touching \
+  --split-min-component-area 12000 \
+  --split-min-peak-distance 36 \
+  --split-max-markers 3
 ```
 
 生成“原图 + 医生标注 + 模型预测”的叠加图：
