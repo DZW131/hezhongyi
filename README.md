@@ -360,15 +360,12 @@ python predict_tiff.py \
   --classes 2 \
   --threshold 0.5 \
   --postprocess \
-  --apply-tissue-mask \
-  --black-threshold 8 \
   --fill-holes \
-  --closing-radius 3 \
-  --opening-radius 1 \
-  --min-component-area 300 \
-  --max-component-area 60000 \
-  --max-component-extent 600
+  --closing-radius 2 \
+  --min-component-area 300
 ```
+
+这组参数是保守版本：只填补空洞、轻微连接小裂缝、删除很小的碎片，不会按最大面积/最大宽高删除正常肾小球。`--max-component-area` 和 `--max-component-extent` 不建议作为默认参数，因为院内 0.25 TIFF 中正常肾小球的连通域可能明显超过 `60000` 像素或 `600` 像素宽高。
 
 后处理参数含义：
 
@@ -377,9 +374,18 @@ python predict_tiff.py \
 --closing-radius：闭运算半径，补小裂缝和小缺口；过大可能加重粘连。
 --opening-radius：开运算半径，去掉细小毛刺；过大可能侵蚀边界。
 --min-component-area：删除小碎片噪声。
---max-component-area / --max-component-extent：删除异常大误检。
---black-threshold：配合 --apply-tissue-mask 排除 CZI 拼接出来的近黑空区。
+--apply-tissue-mask：可选，按原图亮度排除空白背景。
+--black-threshold：可选，配合 --apply-tissue-mask 排除 CZI 拼接出来的近黑空区。
+--max-component-area / --max-component-extent：可选，只在出现明确的大块误检时使用，阈值要先看日志里的 component_area_max / component_extent_max。
 --split-touching：可选，尝试把明显粘连的肾小球连通域拆开。
+```
+
+如果黑色 CZI 空区里仍有较多误检，可以在保守版本基础上追加更宽松的组织过滤：
+
+```bash
+  --apply-tissue-mask \
+  --white-threshold 250 \
+  --black-threshold 8
 ```
 
 如果出现相邻肾小球粘连，可另存一个分离版本做比较：
@@ -394,14 +400,9 @@ python predict_tiff.py \
   --classes 2 \
   --threshold 0.5 \
   --postprocess \
-  --apply-tissue-mask \
-  --black-threshold 8 \
   --fill-holes \
   --closing-radius 2 \
-  --opening-radius 1 \
   --min-component-area 300 \
-  --max-component-area 60000 \
-  --max-component-extent 600 \
   --split-touching \
   --split-min-component-area 12000 \
   --split-min-peak-distance 36 \
@@ -416,6 +417,8 @@ python scripts/render_hzy_gt_pred_overlay.py \
   --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
   --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
   --predictions-dir /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025 \
+  --prediction-suffix _pred_mask_post.png \
+  --output-suffix _overlay_gt_pred_post.jpg \
   --output-dir /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025 \
   --preview-max-size 8000
 ```

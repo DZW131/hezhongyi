@@ -194,11 +194,44 @@ def summarize_binary_mask(mask: np.ndarray) -> Dict[str, int]:
             "foreground_pixels": int(binary.sum()),
             "components": -1,
         }
-    _labeled, num_components = ndimage.label(binary)
-    return {
+
+    labeled, num_components = ndimage.label(binary)
+    summary = {
         "foreground_pixels": int(binary.sum()),
         "components": int(num_components),
     }
+    if num_components == 0:
+        return summary
+
+    areas = []
+    extents = []
+    objects = ndimage.find_objects(labeled)
+    for component_id, slices in enumerate(objects, start=1):
+        if slices is None:
+            continue
+
+        component_mask = labeled[slices] == component_id
+        areas.append(int(component_mask.sum()))
+        height = int(slices[0].stop - slices[0].start)
+        width = int(slices[1].stop - slices[1].start)
+        extents.append(max(height, width))
+
+    if not areas:
+        return summary
+
+    area_values = np.asarray(areas, dtype=np.float64)
+    extent_values = np.asarray(extents, dtype=np.float64)
+    summary.update(
+        {
+            "component_area_min": int(area_values.min()),
+            "component_area_median": int(np.median(area_values)),
+            "component_area_max": int(area_values.max()),
+            "component_extent_min": int(extent_values.min()),
+            "component_extent_median": int(np.median(extent_values)),
+            "component_extent_max": int(extent_values.max()),
+        }
+    )
+    return summary
 
 
 def apply_binary_postprocessing(

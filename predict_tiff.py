@@ -145,6 +145,29 @@ def predict_tiff(
             )
             after_stats = summarize_binary_mask(full_mask)
             logging.info("Mask after postprocessing: %s", after_stats)
+            before_pixels = int(before_stats.get("foreground_pixels", 0))
+            after_pixels = int(after_stats.get("foreground_pixels", 0))
+            if before_pixels > 0:
+                removed_fraction = 1.0 - (after_pixels / before_pixels)
+                if removed_fraction > 0.5:
+                    logging.warning(
+                        "Postprocessing removed %.1f%% of foreground pixels. "
+                        "If many true glomeruli disappear, relax component filters first: "
+                        "remove --max-component-area/--max-component-extent or set them much larger.",
+                        removed_fraction * 100.0,
+                    )
+            if max_component_area > 0:
+                logging.info(
+                    "max_component_area=%s; pre-filter component_area_max=%s",
+                    max_component_area,
+                    before_stats.get("component_area_max"),
+                )
+            if max_component_extent > 0:
+                logging.info(
+                    "max_component_extent=%s; pre-filter component_extent_max=%s",
+                    max_component_extent,
+                    before_stats.get("component_extent_max"),
+                )
 
     return full_mask
 
