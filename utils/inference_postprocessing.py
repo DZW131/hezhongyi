@@ -22,6 +22,11 @@ def warn_scipy_unavailable() -> None:
         _SCIPY_WARNING_EMITTED = True
 
 
+def _close_binary(mask: np.ndarray, radius: int) -> np.ndarray:
+    structure = disk_structure(radius)
+    return ndimage.binary_closing(mask > 0, structure=structure).astype(np.uint8)
+
+
 def disk_structure(radius: int) -> np.ndarray:
     radius = max(int(radius), 1)
     yy, xx = np.ogrid[-radius:radius + 1, -radius:radius + 1]
@@ -49,6 +54,37 @@ def _remove_small_components(mask: np.ndarray, min_component_area: int = 0) -> n
         kept_slice[component_mask] = 1
 
     return kept
+
+
+def _fill_component_holes(mask: np.ndarray, repair_radius: int = 0) -> np.ndarray:
+    labeled, num_components = ndimage.label(mask > 0)
+    if num_components == 0:
+        return mask.astype(np.uint8)
+
+    filled_mask = np.zeros_like(mask, dtype=np.uint8)
+    objects = ndimage.find_objects(labeled)
+    pad = max(int(repair_radius), 1)
+
+    for component_id, slices in enumerate(objects, start=1):
+        if slices is None:
+            continue
+
+        y0 = max(slices[0].start - pad, 0)
+        y1 = min(slices[0].stop + pad, mask.shape[0])
+        x0 = max(slices[1].start - pad, 0)
+        x1 = min(slices[1].stop + pad, mask.shape[1])
+        region = (slice(y0, y1), slice(x0, x1))
+        component = labeled[region] == component_id
+
+        source = component
+        if repair_radius > 0:
+            source = _close_binary(component, radius=repair_radius)
+
+        filled_component = ndimage.binary_fill_holes(source > 0)
+        filled_slice = filled_mask[region]
+        filled_slice[filled_component] = 1
+
+    return filled_mask
 
 
 def summarize_binary_mask(mask: np.ndarray) -> Dict[str, int]:
@@ -101,6 +137,7 @@ def summarize_binary_mask(mask: np.ndarray) -> Dict[str, int]:
 def apply_binary_postprocessing(
     mask: np.ndarray,
     fill_holes: bool = False,
+    hole_repair_radius: int = 0,
     smooth_radius: int = 0,
     min_component_area: int = 0,
 ) -> np.ndarray:
@@ -108,6 +145,7 @@ def apply_binary_postprocessing(
 
     needs_scipy = (
         fill_holes
+        or hole_repair_radius > 0
         or smooth_radius > 0
         or min_component_area > 0
     )
@@ -122,11 +160,11 @@ def apply_binary_postprocessing(
         output = _remove_small_components(output, min_component_area=min_component_area)
 
     if fill_holes:
-        output = ndimage.binary_fill_holes(output > 0).astype(np.uint8)
+        output = _fill_component_holes(output, repair_radius=hole_repair_radius)
 
     if smooth_radius > 0:
+        output = _close_binary(output, radius=smooth_radius)
         structure = disk_structure(smooth_radius)
-        output = ndimage.binary_closing(output > 0, structure=structure).astype(np.uint8)
         output = ndimage.binary_opening(output > 0, structure=structure).astype(np.uint8)
         if fill_holes:
             output = ndimage.binary_fill_holes(output > 0).astype(np.uint8)

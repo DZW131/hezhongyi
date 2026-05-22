@@ -34,6 +34,7 @@ def predict_tiff(
     scale_factor=1.0,
     postprocess=False,
     fill_holes=False,
+    hole_repair_radius=0,
     smooth_radius=0,
     min_component_area=0,
 ):
@@ -112,6 +113,7 @@ def predict_tiff(
             full_mask = apply_binary_postprocessing(
                 full_mask,
                 fill_holes=fill_holes,
+                hole_repair_radius=hole_repair_radius,
                 smooth_radius=smooth_radius,
                 min_component_area=min_component_area,
             )
@@ -143,6 +145,8 @@ def get_args():
                         help='Apply HZY glomerulus mask postprocessing after whole-image prediction')
     parser.add_argument('--fill-holes', action='store_true', default=False,
                         help='Fill holes inside predicted glomerulus components')
+    parser.add_argument('--hole-repair-radius', type=int, default=0,
+                        help='Temporary closing radius before hole filling; helps fill open cavities')
     parser.add_argument('--smooth-radius', type=int, default=0,
                         help='Morphological radius for light boundary smoothing')
     parser.add_argument('--min-component-area', type=int, default=0,
@@ -185,6 +189,7 @@ if __name__ == '__main__':
             scale_factor=args.scale,
             postprocess=args.postprocess,
             fill_holes=args.fill_holes,
+            hole_repair_radius=args.hole_repair_radius,
             smooth_radius=args.smooth_radius,
             min_component_area=args.min_component_area,
         )

@@ -361,8 +361,9 @@ python predict_tiff.py \
   --threshold 0.5 \
   --postprocess \
   --fill-holes \
+  --hole-repair-radius 10 \
   --smooth-radius 2 \
-  --min-component-area 300
+  --min-component-area 800
 ```
 
 这组后处理只做三件事：删除很小的噪声连通域、填补肾小球内部空洞、轻度平滑边界。当前 baseline 推理没有明显大块误检，因此不再使用最大面积、最大宽高、组织 mask 或粘连拆分之类的额外过滤。
@@ -371,8 +372,9 @@ python predict_tiff.py \
 
 ```text
 --fill-holes：填补肾小球 mask 内部空洞。
+--hole-repair-radius：填洞前临时闭合小缺口，用来修补和外界有窄开口相连的“半开洞”；推荐从 6、10、14 依次试。
 --smooth-radius：边界平滑半径，推荐从 1 或 2 开始；过大可能改变肾小球轮廓。
---min-component-area：删除小碎片噪声。
+--min-component-area：删除小碎片噪声；若仍有小白点或小短条残留，可从 800 提到 1000 或 1500。
 ```
 
 生成“原图 + 医生标注 + 模型预测”的叠加图：
@@ -930,6 +932,7 @@ python predict_hspn_stain_norm.py \
 HSPN 脚本还支持以下简化后处理参数：
 
 - `--fill-holes`
+- `--hole-repair-radius`
 - `--smooth-radius`
 - `--min-component-area`
 
@@ -982,8 +985,9 @@ python predict_hspn_enhanced.py \
   --classes 2 \
   --threshold 0.7 \
   --fill-holes \
+  --hole-repair-radius 10 \
   --smooth-radius 2 \
-  --min-component-area 150
+  --min-component-area 800
 
 # 染色归一化版 + 简化后处理
 python predict_hspn_stain_norm.py \
@@ -995,8 +999,9 @@ python predict_hspn_stain_norm.py \
   --classes 2 \
   --threshold 0.5 \
   --fill-holes \
+  --hole-repair-radius 10 \
   --smooth-radius 2 \
-  --min-component-area 150
+  --min-component-area 800
 ```
 
 以上参数是当前院内图测试中的经验起点，不是所有病例的固定常数，最终仍需结合可视化结果进行判断。

@@ -30,6 +30,7 @@ def predict_hspn_tiles(
     out_threshold=0.5,
     scale_factor=1.0,
     fill_holes=False,
+    hole_repair_radius=0,
     smooth_radius=0,
     min_component_area=0,
 ):
@@ -114,6 +115,7 @@ def predict_hspn_tiles(
                     mask_tile = apply_binary_postprocessing(
                         mask_tile,
                         fill_holes=fill_holes,
+                        hole_repair_radius=hole_repair_radius,
                         smooth_radius=smooth_radius,
                         min_component_area=min_component_area,
                     )
@@ -134,6 +136,8 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of target classes')
     parser.add_argument('--fill-holes', action='store_true', default=False,
                         help='Fill holes inside each predicted binary mask tile')
+    parser.add_argument('--hole-repair-radius', type=int, default=0,
+                        help='Temporary closing radius before hole filling; helps fill open cavities')
     parser.add_argument('--smooth-radius', type=int, default=0,
                         help='Morphological radius for light boundary smoothing')
     parser.add_argument('--min-component-area', type=int, default=0,
@@ -171,6 +175,7 @@ if __name__ == '__main__':
             out_threshold=args.threshold,
             scale_factor=args.scale,
             fill_holes=args.fill_holes,
+            hole_repair_radius=args.hole_repair_radius,
             smooth_radius=args.smooth_radius,
             min_component_area=args.min_component_area,
         )
