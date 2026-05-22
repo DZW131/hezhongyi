@@ -393,13 +393,14 @@ python scripts/render_hzy_gt_pred_overlay.py \
 
 如果 `predictions-dir` 中已有多个 `*_pred_mask.png`，也可以不传 `--slide-ids`，脚本会自动批量生成对应 overlay。叠加图中红色轮廓是医生标注，蓝色半透明区域是模型预测。
 
-## I. 后续病变量化任务的扩展方式
+## I. 院内病变分割训练
 
-本次微调优先解决“院内肾小球分割”问题。等基础分割稳定后，可利用同一批 `slice.db` 中的病变标注继续开展病变量化。当前脚本已经能导出以下病变 polygon：
+本次微调优先解决“院内肾小球分割”问题。基础分割稳定后，可利用同一批 `slice.db` 中的病变标注继续开展病变分割。当前脚本已经能导出以下病变 polygon：
 
 ```text
-毛细血管内细胞增生
+废弃肾小球
 肾小球系膜细胞增生
+毛细血管内细胞增生
 细胞性新月体
 纤维细胞性新月体
 纤维性新月体
@@ -409,7 +410,7 @@ python scripts/render_hzy_gt_pred_overlay.py \
 纤维素性血栓
 ```
 
-当前 `prepare_hubmap_tiles.py` 仍是二值 mask 生成逻辑，因此短期内可采用“每类病变单独训练一个二分类模型”的方式。例如训练细胞性新月体分割：
+这些病变并不适合一上来做互斥多分类：同一个肾小球可能同时有多种病变，而且类别数量差异很大。因此当前推荐先做“每类病变一个二分类分割模型”。这样每个模型只回答一个问题：这个区域是不是某一种病变。
 
 在训练病变模型前，建议先生成各类别局部可视化图集，快速熟悉每类病变在图中的形态：
 
@@ -439,33 +440,84 @@ python scripts/render_hzy_label_gallery.py \
   --font-path /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
 ```
 
+批量生成病变分割 tile 数据集：
+
 ```bash
-python scripts/prepare_hubmap_tiles.py \
+python scripts/prepare_hzy_lesion_tiles.py \
   --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
   --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
-  --annotation-format json-polygons \
-  --annotation-json-suffix .json \
-  --target-labels 细胞性新月体 \
-  --output-dir /root/datasets/HZY_HSPN_tiles_crescent_cellular \
-  --tile-size 1024 \
-  --stride 1024 \
+  --output-root /root/datasets/HZY_HSPN_lesion_tiles \
+  --preset trainable \
+  --tile-size 512 \
+  --stride 512 \
   --val-ratio 0.2 \
   --min-tissue-coverage 0.05 \
-  --min-positive-pixels 32 \
+  --min-positive-pixels 16 \
   --negative-ratio 3.0
 ```
 
-未来如果要同时识别多种病变，建议进一步改造为多类别或多标签分割任务，并补充实例级统计逻辑，例如：
+`--preset trainable` 默认准备当前样本数相对可训练的类别：
 
 ```text
-单张 WSI 肾小球总数
-废弃肾小球比例
-新月体肾小球比例
-节段硬化比例
-系膜增生相关区域比例
-毛细血管内细胞增生区域比例
-病变肾小球占比
+废弃肾小球
+肾小球系膜细胞增生
+毛细血管内细胞增生
+细胞性新月体
+纤维细胞性新月体
+纤维性新月体
+节段硬化
 ```
+
+`节段球囊粘连`、`纤维素样坏死`、`纤维素性血栓` 当前样本数太少，建议先保留做可视化和统计，暂不作为稳定训练目标。若要强行生成，可用 `--preset all` 或 `--labels 节段球囊粘连`。
+
+批量训练这些病变二分类模型：
+
+```bash
+python scripts/train_hzy_lesion_binary_models.py \
+  --tiles-root /root/datasets/HZY_HSPN_lesion_tiles \
+  --checkpoint-root /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_lesion_binary \
+  --base-checkpoint /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --preset trainable \
+  --epochs 50 \
+  --batch-size 8 \
+  --learning-rate 1e-5 \
+  --scale 1.0 \
+  --classes 2 \
+  --amp \
+  --optimizer adamw \
+  --wandb-mode disabled
+```
+
+也可以只训练某一个病变，例如：
+
+```bash
+python scripts/prepare_hzy_lesion_tiles.py \
+  --labels 细胞性新月体 \
+  --output-root /root/datasets/HZY_HSPN_lesion_tiles
+
+python scripts/train_hzy_lesion_binary_models.py \
+  --labels 细胞性新月体 \
+  --tiles-root /root/datasets/HZY_HSPN_lesion_tiles \
+  --checkpoint-root /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_lesion_binary \
+  --base-checkpoint /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --epochs 50 \
+  --batch-size 8 \
+  --learning-rate 1e-5 \
+  --scale 1.0 \
+  --classes 2 \
+  --amp \
+  --optimizer adamw \
+  --wandb-mode disabled
+```
+
+训练完成后，每个病变会有独立 checkpoint，例如：
+
+```text
+/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_lesion_binary/cellular_crescent/best.pth
+/root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_lesion_binary/mesangial_hypercellularity/best.pth
+```
+
+下一步量化统计时，再把“肾小球实例分割结果”和“各病变模型预测结果”进行空间匹配，得到单个肾小球是否存在新月体、节段硬化、系膜增生等指标。
 
 ---
 
