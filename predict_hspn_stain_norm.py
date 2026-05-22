@@ -12,7 +12,7 @@ from tqdm import tqdm
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
 from utils.data_loading import BasicDataset
-from utils.inference_postprocessing import apply_binary_postprocessing, estimate_tissue_mask
+from utils.inference_postprocessing import apply_binary_postprocessing
 
 
 def preprocess_image_tensor(pil_img, scale_factor: float, device: torch.device) -> torch.Tensor:
@@ -52,13 +52,9 @@ def predict_hspn_with_stain_norm(
     tile_size=1024,
     out_threshold=0.5,
     scale_factor=1.0,
-    apply_tissue_mask=False,
-    white_threshold=230.0,
     fill_holes=False,
-    closing_radius=0,
+    smooth_radius=0,
     min_component_area=0,
-    max_component_area=0,
-    max_component_extent=0,
 ):
     """
     Predicts masks for large TIFF using sliding window and color normalization.
@@ -126,17 +122,11 @@ def predict_hspn_with_stain_norm(
                     mask_tile = (full_probs > out_threshold).cpu().numpy().astype(np.uint8)
 
                 if net.n_classes <= 2:
-                    tissue_mask = None
-                    if apply_tissue_mask:
-                        tissue_mask = estimate_tissue_mask(raw_tile, white_threshold=white_threshold)
                     mask_tile = apply_binary_postprocessing(
                         mask_tile,
-                        tissue_mask=tissue_mask,
                         fill_holes=fill_holes,
-                        closing_radius=closing_radius,
+                        smooth_radius=smooth_radius,
                         min_component_area=min_component_area,
-                        max_component_area=max_component_area,
-                        max_component_extent=max_component_extent,
                     )
 
                 # Stitch back to full mask
@@ -153,20 +143,12 @@ def get_args():
     parser.add_argument('--scale', '-s', type=float, default=1.0, help='Scale factor for each tile before inference')
     parser.add_argument('--threshold', type=float, default=0.5, help='Confidence threshold')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes in the checkpoint')
-    parser.add_argument('--apply-tissue-mask', action='store_true', default=False,
-                        help='Keep predictions only inside non-white tissue regions estimated from the raw tile')
-    parser.add_argument('--white-threshold', type=float, default=230.0,
-                        help='Intensity threshold used to estimate non-white tissue for postprocessing')
     parser.add_argument('--fill-holes', action='store_true', default=False,
                         help='Fill holes inside each predicted binary mask tile')
-    parser.add_argument('--closing-radius', type=int, default=0,
-                        help='Morphological closing radius used to fill small gaps in predicted masks')
+    parser.add_argument('--smooth-radius', type=int, default=0,
+                        help='Morphological radius for light boundary smoothing')
     parser.add_argument('--min-component-area', type=int, default=0,
                         help='Discard connected components smaller than this many pixels')
-    parser.add_argument('--max-component-area', type=int, default=0,
-                        help='Discard connected components larger than this many pixels')
-    parser.add_argument('--max-component-extent', type=int, default=0,
-                        help='Discard connected components whose width or height exceeds this limit')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -193,13 +175,9 @@ if __name__ == '__main__':
                                             tile_size=args.tile_size, 
                                             out_threshold=args.threshold,
                                             scale_factor=args.scale,
-                                            apply_tissue_mask=args.apply_tissue_mask,
-                                            white_threshold=args.white_threshold,
                                             fill_holes=args.fill_holes,
-                                            closing_radius=args.closing_radius,
-                                            min_component_area=args.min_component_area,
-                                            max_component_area=args.max_component_area,
-                                            max_component_extent=args.max_component_extent)
+                                            smooth_radius=args.smooth_radius,
+                                            min_component_area=args.min_component_area)
         
         # Save as PNG
         mask_img = Image.fromarray(mask * 255)

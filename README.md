@@ -361,52 +361,18 @@ python predict_tiff.py \
   --threshold 0.5 \
   --postprocess \
   --fill-holes \
-  --closing-radius 2 \
+  --smooth-radius 2 \
   --min-component-area 300
 ```
 
-这组参数是保守版本：只填补空洞、轻微连接小裂缝、删除很小的碎片，不会按最大面积/最大宽高删除正常肾小球。`--max-component-area` 和 `--max-component-extent` 不建议作为默认参数，因为院内 0.25 TIFF 中正常肾小球的连通域可能明显超过 `60000` 像素或 `600` 像素宽高。
+这组后处理只做三件事：删除很小的噪声连通域、填补肾小球内部空洞、轻度平滑边界。当前 baseline 推理没有明显大块误检，因此不再使用最大面积、最大宽高、组织 mask 或粘连拆分之类的额外过滤。
 
 后处理参数含义：
 
 ```text
 --fill-holes：填补肾小球 mask 内部空洞。
---closing-radius：闭运算半径，补小裂缝和小缺口；过大可能加重粘连。
---opening-radius：开运算半径，去掉细小毛刺；过大可能侵蚀边界。
+--smooth-radius：边界平滑半径，推荐从 1 或 2 开始；过大可能改变肾小球轮廓。
 --min-component-area：删除小碎片噪声。
---apply-tissue-mask：可选，按原图亮度排除空白背景。
---black-threshold：可选，配合 --apply-tissue-mask 排除 CZI 拼接出来的近黑空区。
---max-component-area / --max-component-extent：可选，只在出现明确的大块误检时使用，阈值要先看日志里的 component_area_max / component_extent_max。
---split-touching：可选，尝试把明显粘连的肾小球连通域拆开。
-```
-
-如果黑色 CZI 空区里仍有较多误检，可以在保守版本基础上追加更宽松的组织过滤：
-
-```bash
-  --apply-tissue-mask \
-  --white-threshold 250 \
-  --black-threshold 8
-```
-
-如果出现相邻肾小球粘连，可另存一个分离版本做比较：
-
-```bash
-python predict_tiff.py \
-  --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
-  --input /root/datasets/HZY_HSPN_export_ds025/images/2026001_s0.tiff \
-  --output /root/Pytorch-UNet/Pytorch-UNet-master/predictions/hzy_scene_ds025/2026001_s0_pred_mask_post_split.png \
-  --tile-size 1024 \
-  --scale 0.5 \
-  --classes 2 \
-  --threshold 0.5 \
-  --postprocess \
-  --fill-holes \
-  --closing-radius 2 \
-  --min-component-area 300 \
-  --split-touching \
-  --split-min-component-area 12000 \
-  --split-min-peak-distance 36 \
-  --split-max-markers 3
 ```
 
 生成“原图 + 医生标注 + 模型预测”的叠加图：
@@ -959,16 +925,13 @@ python predict_hspn_stain_norm.py \
 - `predict_hspn_enhanced.py` 推荐从 `--threshold 0.7` 开始
 - `predict_hspn_stain_norm.py` 推荐从 `--threshold 0.5` 开始
 - 若 `enhanced` 前景污染过多，可继续比较 `0.6`、`0.7`、`0.8` 甚至更高阈值
-- 若院内图结果仍有大块假阳性，可启用 tissue mask 与连通域过滤
-- 使用连通域过滤前需安装 `scipy`，例如 `pip install -r requirements.txt`
+- 若出现小碎片、肾小球内部空洞或边界毛糙，可启用简化后处理
 
-HSPN 脚本还支持以下后处理参数：
+HSPN 脚本还支持以下简化后处理参数：
 
-- `--apply-tissue-mask`
+- `--fill-holes`
+- `--smooth-radius`
 - `--min-component-area`
-- `--max-component-area`
-- `--max-component-extent`
-- `--white-threshold`
 
 ### 9.6 当前院内图示例命令
 
@@ -1006,10 +969,10 @@ python predict_hspn_stain_norm.py \
   --threshold 0.5
 ```
 
-如果 HSPN 结果出现明显的大块污染或条带状假阳性，可尝试过滤版：
+如果 HSPN 结果出现小碎片、内部空洞或边界毛糙，可尝试简化后处理版：
 
 ```bash
-# 增强版 + tissue mask + 连通域过滤
+# 增强版 + 简化后处理
 python predict_hspn_enhanced.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -1018,12 +981,11 @@ python predict_hspn_enhanced.py \
   --scale 0.5 \
   --classes 2 \
   --threshold 0.7 \
-  --apply-tissue-mask \
-  --min-component-area 150 \
-  --max-component-area 30000 \
-  --max-component-extent 384
+  --fill-holes \
+  --smooth-radius 2 \
+  --min-component-area 150
 
-# 染色归一化版 + tissue mask + 连通域过滤
+# 染色归一化版 + 简化后处理
 python predict_hspn_stain_norm.py \
   --model /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hubmap_unet_run2/best.pth \
   --input /root/datasets/diyingjia/202601260012.tif \
@@ -1032,10 +994,9 @@ python predict_hspn_stain_norm.py \
   --scale 0.5 \
   --classes 2 \
   --threshold 0.5 \
-  --apply-tissue-mask \
-  --min-component-area 150 \
-  --max-component-area 30000 \
-  --max-component-extent 384
+  --fill-holes \
+  --smooth-radius 2 \
+  --min-component-area 150
 ```
 
 以上参数是当前院内图测试中的经验起点，不是所有病例的固定常数，最终仍需结合可视化结果进行判断。
