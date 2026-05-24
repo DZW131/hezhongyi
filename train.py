@@ -102,6 +102,36 @@ def save_model_weights(model: torch.nn.Module, mask_values, output_path: Path) -
     torch.save(state_dict, str(output_path))
 
 
+def load_model_weights(model: torch.nn.Module, checkpoint_path: str, device: torch.device, partial: bool = False) -> None:
+    state_dict = load_torch_state(checkpoint_path, map_location=device)
+    state_dict.pop('mask_values', None)
+
+    if not partial:
+        model.load_state_dict(state_dict)
+        logging.info(f'Model loaded from {checkpoint_path}')
+        return
+
+    model_state = model.state_dict()
+    compatible_state = {}
+    skipped_keys = []
+    for key, value in state_dict.items():
+        if key in model_state and tuple(model_state[key].shape) == tuple(value.shape):
+            compatible_state[key] = value
+        else:
+            skipped_keys.append(key)
+
+    model_state.update(compatible_state)
+    model.load_state_dict(model_state)
+    logging.info(
+        'Partially loaded %s tensors from %s; skipped %s tensors with missing keys or mismatched shapes.',
+        len(compatible_state),
+        checkpoint_path,
+        len(skipped_keys),
+    )
+    if skipped_keys:
+        logging.info('Skipped checkpoint keys: %s', ', '.join(skipped_keys[:20]))
+
+
 def write_history_csv(history_rows: List[Dict[str, float]], output_path: Path) -> None:
     if not history_rows:
         return
@@ -595,6 +625,8 @@ def get_args():
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
+    parser.add_argument('--load-partial', action='store_true', default=False,
+                        help='Load only checkpoint tensors whose names and shapes match the current model')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
@@ -700,10 +732,7 @@ if __name__ == '__main__':
     )
 
     if args.load:
-        state_dict = load_torch_state(args.load, map_location=device)
-        state_dict.pop('mask_values', None)
-        model.load_state_dict(state_dict)
-        logging.info(f'Model loaded from {args.load}')
+        load_model_weights(model, args.load, device=device, partial=args.load_partial)
 
     model.to(device=device)
     try:

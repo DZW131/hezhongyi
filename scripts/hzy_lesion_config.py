@@ -7,53 +7,71 @@ class LesionLabel:
     label: str
     slug: str
     count: int
-    trainable_default: bool
 
 
-LESION_LABELS: List[LesionLabel] = [
-    LesionLabel("废弃肾小球", "discarded_glomerulus", 39, True),
-    LesionLabel("肾小球系膜细胞增生", "mesangial_hypercellularity", 308, True),
-    LesionLabel("毛细血管内细胞增生", "endocapillary_hypercellularity", 179, True),
-    LesionLabel("细胞性新月体", "cellular_crescent", 56, True),
-    LesionLabel("纤维细胞性新月体", "fibrocellular_crescent", 42, True),
-    LesionLabel("纤维性新月体", "fibrous_crescent", 22, True),
-    LesionLabel("节段硬化", "segmental_sclerosis", 30, True),
-    LesionLabel("节段球囊粘连", "segmental_capsular_adhesion", 16, False),
-    LesionLabel("纤维素样坏死", "fibrinoid_necrosis", 4, False),
-    LesionLabel("纤维素性血栓", "fibrin_thrombus", 1, False),
+@dataclass(frozen=True)
+class LesionTask:
+    name: str
+    slug: str
+    labels: List[LesionLabel]
+
+    @property
+    def num_classes(self) -> int:
+        return len(self.labels) + 1
+
+    @property
+    def class_map(self) -> Dict[str, int]:
+        return {label.label: index for index, label in enumerate(self.labels, start=1)}
+
+
+GLOMERULUS_LABELS: List[LesionLabel] = [
+    LesionLabel("未废弃肾小球", "non_discarded_glomerulus", 1325),
+    LesionLabel("废弃肾小球", "discarded_glomerulus", 39),
+]
+
+PROLIFERATION_LABELS: List[LesionLabel] = [
+    LesionLabel("肾小球系膜细胞增生", "mesangial_hypercellularity", 308),
+    LesionLabel("毛细血管内细胞增生", "endocapillary_hypercellularity", 179),
+]
+
+CRESCENT_LABELS: List[LesionLabel] = [
+    LesionLabel("细胞性新月体", "cellular_crescent", 56),
+    LesionLabel("纤维细胞性新月体", "fibrocellular_crescent", 42),
+    LesionLabel("纤维性新月体", "fibrous_crescent", 22),
+]
+
+OTHER_LESION_LABELS: List[LesionLabel] = [
+    LesionLabel("节段硬化", "segmental_sclerosis", 30),
+    LesionLabel("节段球囊粘连", "segmental_capsular_adhesion", 16),
+    LesionLabel("纤维素样坏死", "fibrinoid_necrosis", 4),
+    LesionLabel("纤维素性血栓", "fibrin_thrombus", 1),
+]
+
+LESION_TASKS: List[LesionTask] = [
+    LesionTask("细胞增生类病变", "proliferation", PROLIFERATION_LABELS),
+    LesionTask("新月体类病变", "crescent", CRESCENT_LABELS),
+    LesionTask("其他病变", "other_lesions", OTHER_LESION_LABELS),
 ]
 
 
-def labels_by_slug() -> Dict[str, LesionLabel]:
-    return {item.slug: item for item in LESION_LABELS}
+def tasks_by_slug() -> Dict[str, LesionTask]:
+    return {task.slug: task for task in LESION_TASKS}
 
 
-def labels_by_name() -> Dict[str, LesionLabel]:
-    return {item.label: item for item in LESION_LABELS}
+def resolve_lesion_tasks(requested_tasks: Iterable[str]) -> List[LesionTask]:
+    requested = list(requested_tasks)
+    if not requested:
+        return list(LESION_TASKS)
 
-
-def resolve_lesion_labels(preset: str, requested: Iterable[str]) -> List[LesionLabel]:
-    by_slug = labels_by_slug()
-    by_name = labels_by_name()
-    requested_items = list(requested)
-
-    if requested_items:
-        resolved = []
-        for item in requested_items:
-            if item in by_slug:
-                resolved.append(by_slug[item])
-            elif item in by_name:
-                resolved.append(by_name[item])
-            else:
-                valid = sorted(list(by_slug.keys()) + list(by_name.keys()))
-                raise ValueError("Unknown lesion label '{}'. Valid values: {}".format(item, ", ".join(valid)))
-        return resolved
-
-    if preset == "all":
-        return list(LESION_LABELS)
-    if preset == "trainable":
-        return [item for item in LESION_LABELS if item.trainable_default]
-    if preset == "rare":
-        return [item for item in LESION_LABELS if not item.trainable_default]
-
-    raise ValueError("Unsupported preset '{}'".format(preset))
+    by_slug = tasks_by_slug()
+    by_name = {task.name: task for task in LESION_TASKS}
+    resolved = []
+    for item in requested:
+        if item in by_slug:
+            resolved.append(by_slug[item])
+        elif item in by_name:
+            resolved.append(by_name[item])
+        else:
+            valid = sorted(list(by_slug.keys()) + list(by_name.keys()))
+            raise ValueError("Unknown lesion task '{}'. Valid values: {}".format(item, ", ".join(valid)))
+    return resolved
