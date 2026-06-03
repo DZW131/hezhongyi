@@ -32,6 +32,14 @@ def parse_args():
                         help="Weights & Biases mode")
     parser.add_argument("--amp", action="store_true", default=False, help="Use AMP")
     parser.add_argument("--num-workers", type=int, default=8, help="Dataloader workers")
+    parser.add_argument("--background-weight", type=float, default=0.05,
+                        help="CrossEntropy weight for background pixels")
+    parser.add_argument("--foreground-weight", type=float, default=1.0,
+                        help="CrossEntropy weight for every lesion foreground class")
+    parser.add_argument("--include-background-dice", action="store_true", default=False,
+                        help="Include background in Dice loss. By default lesion tasks use foreground-only Dice")
+    parser.add_argument("--ce-weight", type=float, default=1.0, help="CrossEntropy loss multiplier")
+    parser.add_argument("--dice-weight", type=float, default=1.0, help="Dice loss multiplier")
     parser.add_argument("--skip-existing", action="store_true", default=False,
                         help="Skip a task if checkpoint best.pth already exists")
     parser.add_argument("--dry-run", action="store_true", default=False, help="Print commands without running them")
@@ -114,6 +122,7 @@ def validate_dataset(tiles_root: Path, task):
 def build_train_command(args, task) -> list:
     dirs = dataset_dirs(Path(args.tiles_root), task.slug)
     checkpoint_dir = Path(args.checkpoint_root) / task.slug
+    class_weights = [args.background_weight] + [args.foreground_weight] * (task.num_classes - 1)
     command = [
         sys.executable,
         str(repo_root() / "train.py"),
@@ -146,9 +155,17 @@ def build_train_command(args, task) -> list:
         args.wandb_mode,
         "--num-workers",
         str(args.num_workers),
+        "--class-weights",
+        ",".join(str(value) for value in class_weights),
+        "--ce-weight",
+        str(args.ce_weight),
+        "--dice-weight",
+        str(args.dice_weight),
     ]
     if args.amp:
         command.append("--amp")
+    if not args.include_background_dice:
+        command.append("--foreground-dice-only")
     return command
 
 

@@ -23,7 +23,7 @@ except ImportError:
 from evaluate import evaluate
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
-from utils.data_loading import BasicDataset, CarvanaDataset
+from utils.data_loading import BasicDataset, CarvanaDataset, load_image
 from utils.dice_score import dice_loss
 from utils.segmentation_metrics import format_metrics
 from utils.visualization import save_segmentation_preview, save_training_curves
@@ -53,19 +53,45 @@ def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return model
 
 
-def compute_segmentation_loss(logits: torch.Tensor, true_masks: torch.Tensor, n_classes: int) -> torch.Tensor:
+def parse_class_weights(class_weights: str, n_classes: int, device: torch.device) -> Optional[torch.Tensor]:
+    if not class_weights:
+        return None
+
+    values = [float(item.strip()) for item in class_weights.split(',') if item.strip()]
+    if len(values) != n_classes:
+        raise ValueError(
+            '--class-weights must contain exactly {} comma-separated values, got {}'.format(
+                n_classes,
+                len(values),
+            )
+        )
+    return torch.tensor(values, dtype=torch.float32, device=device)
+
+
+def compute_segmentation_loss(
+    logits: torch.Tensor,
+    true_masks: torch.Tensor,
+    n_classes: int,
+    class_weights: Optional[torch.Tensor] = None,
+    foreground_dice_only: bool = False,
+    ce_weight: float = 1.0,
+    dice_weight: float = 1.0,
+) -> torch.Tensor:
     if n_classes == 1:
         loss = nn.BCEWithLogitsLoss()(logits.squeeze(1), true_masks.float())
         loss += dice_loss(torch.sigmoid(logits.squeeze(1)), true_masks.float(), multiclass=False)
         return loss
 
-    loss = nn.CrossEntropyLoss()(logits, true_masks)
-    loss += dice_loss(
-        F.softmax(logits, dim=1).float(),
-        F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float(),
-        multiclass=True
-    )
-    return loss
+    ce_loss = nn.CrossEntropyLoss(weight=class_weights)(logits, true_masks)
+    pred_probs = F.softmax(logits, dim=1).float()
+    true_one_hot = F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float()
+
+    if foreground_dice_only and n_classes > 1:
+        pred_probs = pred_probs[:, 1:]
+        true_one_hot = true_one_hot[:, 1:]
+
+    foreground_loss = dice_loss(pred_probs, true_one_hot, multiclass=True)
+    return ce_weight * ce_loss + dice_weight * foreground_loss
 
 
 def create_dataset(images_dir: Path, masks_dir: Path, img_scale: float):
@@ -302,6 +328,10 @@ def train_model(
     val_frequency: int = 1,
     analysis_frequency: int = 5,
     preview_frequency: int = 5,
+    class_weights: str = '',
+    foreground_dice_only: bool = False,
+    ce_weight: float = 1.0,
+    dice_weight: float = 1.0,
 ):
     if (val_images_dir is None) != (val_masks_dir is None):
         raise ValueError('Validation image and mask directories must be provided together.')
@@ -340,6 +370,7 @@ def train_model(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp and device.type == 'cuda')
     train_model_for_forward, is_compiled = maybe_compile_model(model, device=device, compile_mode=compile_mode)
+    class_weight_tensor = parse_class_weights(class_weights, model.n_classes, device)
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir = checkpoint_dir / 'analysis'
@@ -377,6 +408,10 @@ def train_model(
             val_frequency=val_frequency,
             analysis_frequency=analysis_frequency,
             preview_frequency=preview_frequency,
+            class_weights=class_weights,
+            foreground_dice_only=foreground_dice_only,
+            ce_weight=ce_weight,
+            dice_weight=dice_weight,
         ),
         mode=wandb_mode,
     )
@@ -398,7 +433,9 @@ def train_model(
         '    num_workers:         %s\n'
         '    persistent_workers:  %s\n'
         '    prefetch_factor:     %s\n'
-        '    val_frequency:       %s',
+        '    val_frequency:       %s\n'
+        '    class_weights:       %s\n'
+        '    foreground dice:     %s',
         epochs,
         batch_size,
         learning_rate,
@@ -415,6 +452,8 @@ def train_model(
         persistent_workers and num_workers > 0,
         prefetch_factor if num_workers > 0 else 0,
         val_frequency,
+        class_weights or 'none',
+        foreground_dice_only,
     )
 
     best_metric_value = float('-inf')
@@ -450,7 +489,15 @@ def train_model(
 
                     with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                         masks_pred = train_model_for_forward(images)
-                        loss = compute_segmentation_loss(masks_pred, true_masks, model.n_classes)
+                        loss = compute_segmentation_loss(
+                            masks_pred,
+                            true_masks,
+                            model.n_classes,
+                            class_weights=class_weight_tensor,
+                            foreground_dice_only=foreground_dice_only,
+                            ce_weight=ce_weight,
+                            dice_weight=dice_weight,
+                        )
 
                     optimizer.zero_grad(set_to_none=True)
                     grad_scaler.scale(loss).backward()
@@ -477,7 +524,16 @@ def train_model(
 
             if run_validation:
                 validation_start = time.perf_counter()
-                val_metrics, preview = evaluate(train_model_for_forward, val_loader, device, amp)
+                val_metrics, preview = evaluate(
+                    train_model_for_forward,
+                    val_loader,
+                    device,
+                    amp,
+                    class_weights=class_weight_tensor,
+                    foreground_dice_only=foreground_dice_only,
+                    ce_weight=ce_weight,
+                    dice_weight=dice_weight,
+                )
                 validation_seconds = time.perf_counter() - validation_start
                 scheduler.step(val_metrics[checkpoint_metric])
 
@@ -674,6 +730,12 @@ def get_args():
                         help='Refresh training curves every N epochs (final epoch always refreshes)')
     parser.add_argument('--preview-frequency', type=int, default=5,
                         help='Save validation preview images every N epochs (best and final still save)')
+    parser.add_argument('--class-weights', type=str, default='',
+                        help='Optional comma-separated CrossEntropy class weights, e.g. 0.05,1,1')
+    parser.add_argument('--foreground-dice-only', action='store_true', default=False,
+                        help='For multi-class training, compute Dice loss on foreground classes only')
+    parser.add_argument('--ce-weight', type=float, default=1.0, help='CrossEntropy loss multiplier')
+    parser.add_argument('--dice-weight', type=float, default=1.0, help='Dice loss multiplier')
 
     return parser.parse_args()
 
@@ -708,6 +770,10 @@ def run_training(args, model, device):
         val_frequency=args.val_frequency,
         analysis_frequency=args.analysis_frequency,
         preview_frequency=args.preview_frequency,
+        class_weights=args.class_weights,
+        foreground_dice_only=args.foreground_dice_only,
+        ce_weight=args.ce_weight,
+        dice_weight=args.dice_weight,
     )
 
 

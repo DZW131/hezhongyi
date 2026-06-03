@@ -9,19 +9,30 @@ from utils.dice_score import dice_loss
 from utils.segmentation_metrics import SegmentationMetricAccumulator, logits_to_labels
 
 
-def _compute_validation_loss(logits: torch.Tensor, true_masks: torch.Tensor, n_classes: int) -> torch.Tensor:
+def _compute_validation_loss(
+    logits: torch.Tensor,
+    true_masks: torch.Tensor,
+    n_classes: int,
+    class_weights: Optional[torch.Tensor] = None,
+    foreground_dice_only: bool = False,
+    ce_weight: float = 1.0,
+    dice_weight: float = 1.0,
+) -> torch.Tensor:
     if n_classes == 1:
         loss = nn.BCEWithLogitsLoss()(logits.squeeze(1), true_masks.float())
         loss += dice_loss(torch.sigmoid(logits.squeeze(1)), true_masks.float(), multiclass=False)
         return loss
 
-    loss = nn.CrossEntropyLoss()(logits, true_masks)
-    loss += dice_loss(
-        F.softmax(logits, dim=1).float(),
-        F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float(),
-        multiclass=True
-    )
-    return loss
+    ce_loss = nn.CrossEntropyLoss(weight=class_weights)(logits, true_masks)
+    pred_probs = F.softmax(logits, dim=1).float()
+    true_one_hot = F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float()
+
+    if foreground_dice_only and n_classes > 1:
+        pred_probs = pred_probs[:, 1:]
+        true_one_hot = true_one_hot[:, 1:]
+
+    foreground_loss = dice_loss(pred_probs, true_one_hot, multiclass=True)
+    return ce_weight * ce_loss + dice_weight * foreground_loss
 
 
 @torch.inference_mode()
@@ -31,6 +42,10 @@ def evaluate(
     device: torch.device,
     amp: bool,
     threshold: float = 0.5,
+    class_weights: Optional[torch.Tensor] = None,
+    foreground_dice_only: bool = False,
+    ce_weight: float = 1.0,
+    dice_weight: float = 1.0,
 ) -> Tuple[Dict[str, float], Optional[Dict[str, torch.Tensor]]]:
     net.eval()
     num_val_batches = len(dataloader)
@@ -56,7 +71,15 @@ def evaluate(
             mask_true = mask_true.to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
             logits = net(image)
-            loss = _compute_validation_loss(logits, mask_true, net.n_classes)
+            loss = _compute_validation_loss(
+                logits,
+                mask_true,
+                net.n_classes,
+                class_weights=class_weights,
+                foreground_dice_only=foreground_dice_only,
+                ce_weight=ce_weight,
+                dice_weight=dice_weight,
+            )
             running_loss += loss.item()
             metrics.update(logits, mask_true)
 
