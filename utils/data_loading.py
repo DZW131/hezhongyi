@@ -1,17 +1,108 @@
 import json
 import logging
 import numpy as np
+import random
 import torch
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 from functools import partial
 from multiprocessing import Pool
 from os import listdir
 from os.path import splitext, isfile, join
 from pathlib import Path
+from typing import Optional
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from utils.checkpoint_io import load_torch_state
+
+
+class SegmentationTrainTransform:
+    def __init__(self, mode: str = 'basic', seed: Optional[int] = None):
+        self.mode = mode
+        self.rng = random.Random(seed)
+
+        if mode not in ('basic', 'strong'):
+            raise ValueError("Unsupported augmentation mode '{}'. Use off, basic, or strong.".format(mode))
+
+    def _chance(self, probability: float) -> bool:
+        return self.rng.random() < probability
+
+    def _uniform(self, low: float, high: float) -> float:
+        return self.rng.uniform(low, high)
+
+    def _affine(self, image: Image.Image, mask: Image.Image):
+        if not self._chance(0.35):
+            return image, mask
+
+        max_shift = 0.04 if self.mode == 'basic' else 0.08
+        max_scale_delta = 0.08 if self.mode == 'basic' else 0.15
+        max_angle = 12 if self.mode == 'basic' else 25
+        width, height = image.size
+
+        angle = self._uniform(-max_angle, max_angle)
+        scale = self._uniform(1.0 - max_scale_delta, 1.0 + max_scale_delta)
+        tx = self._uniform(-max_shift, max_shift) * width
+        ty = self._uniform(-max_shift, max_shift) * height
+
+        image = image.transform(
+            image.size,
+            Image.AFFINE,
+            (1.0 / scale, 0.0, -tx, 0.0, 1.0 / scale, -ty),
+            resample=Image.BICUBIC,
+            fillcolor=(255, 255, 255),
+        ).rotate(angle, resample=Image.BICUBIC, fillcolor=(255, 255, 255))
+        mask = mask.transform(
+            mask.size,
+            Image.AFFINE,
+            (1.0 / scale, 0.0, -tx, 0.0, 1.0 / scale, -ty),
+            resample=Image.NEAREST,
+            fillcolor=0,
+        ).rotate(angle, resample=Image.NEAREST, fillcolor=0)
+        return image, mask
+
+    def _color_jitter(self, image: Image.Image) -> Image.Image:
+        contrast_delta = 0.12 if self.mode == 'basic' else 0.22
+        brightness_delta = 0.12 if self.mode == 'basic' else 0.22
+        color_delta = 0.08 if self.mode == 'basic' else 0.16
+
+        if self._chance(0.45):
+            image = ImageEnhance.Contrast(image).enhance(self._uniform(1.0 - contrast_delta, 1.0 + contrast_delta))
+        if self._chance(0.45):
+            image = ImageEnhance.Brightness(image).enhance(self._uniform(1.0 - brightness_delta, 1.0 + brightness_delta))
+        if self._chance(0.30):
+            image = ImageEnhance.Color(image).enhance(self._uniform(1.0 - color_delta, 1.0 + color_delta))
+        if self._chance(0.25):
+            gamma = self._uniform(0.85, 1.15) if self.mode == 'basic' else self._uniform(0.75, 1.30)
+            array = np.asarray(image).astype(np.float32) / 255.0
+            array = np.power(np.clip(array, 0.0, 1.0), gamma)
+            image = Image.fromarray(np.clip(array * 255.0, 0, 255).astype(np.uint8))
+        return image
+
+    def __call__(self, image: Image.Image, mask: Image.Image):
+        image = image.convert('RGB')
+        mask = mask.convert('L')
+
+        if self._chance(0.5):
+            image = ImageOps.mirror(image)
+            mask = ImageOps.mirror(mask)
+        if self._chance(0.5):
+            image = ImageOps.flip(image)
+            mask = ImageOps.flip(mask)
+        if self._chance(0.5):
+            k = self.rng.choice([1, 2, 3])
+            image = image.rotate(90 * k, resample=Image.BICUBIC, expand=False)
+            mask = mask.rotate(90 * k, resample=Image.NEAREST, expand=False)
+
+        image, mask = self._affine(image, mask)
+        image = self._color_jitter(image)
+        return image, mask
+
+
+def create_train_transform(mode: str = 'off', seed: Optional[int] = None):
+    normalized = (mode or 'off').lower()
+    if normalized in ('off', 'none', 'false', '0'):
+        return None
+    return SegmentationTrainTransform(mode=normalized, seed=seed)
 
 
 def load_image(filename):
@@ -39,12 +130,20 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(
+        self,
+        images_dir: str,
+        mask_dir: str,
+        scale: float = 1.0,
+        mask_suffix: str = '',
+        transform=None,
+    ):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
         self.scale = scale
         self.mask_suffix = mask_suffix
+        self.transform = transform
 
         # Filter for .jpg files to identify valid training samples
         self.ids = [splitext(file)[0] for file in listdir(images_dir) 
@@ -153,6 +252,9 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
+        if self.transform is not None:
+            img, mask = self.transform(img, mask)
+
         img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
         mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
 
@@ -163,6 +265,6 @@ class BasicDataset(Dataset):
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1):
+    def __init__(self, images_dir, mask_dir, scale=1, transform=None):
         # Set mask_suffix to empty since our script uses identical names for img and mask
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='')
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='', transform=transform)

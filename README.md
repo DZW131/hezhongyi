@@ -581,6 +581,121 @@ python scripts/train_hzy_lesion_task_models.py \
 
 训练阶段使用医生肾小球标注裁 crop；推理和量化阶段再使用肾小球模型预测结果生成实例 crop，并将病变预测映射回原图做单肾小球统计。
 
+### I.2 新实验选项：二分类新月体、数据增强和稀疏分割 loss
+
+当前病变分割支持 4 类 loss 配方之外的稀疏目标训练选项：
+
+```text
+--augmentation basic|strong        训练集增强，验证集不增强
+--loss-mode focal_dice             Focal CE + Dice
+--loss-mode tversky                CE + Tversky
+--loss-mode focal_tversky          Focal CE + Focal Tversky
+--loss-mode generalized_dice       Generalized Dice
+--loss-mode ce_generalized_dice    CE + Generalized Dice
+```
+
+数据增强包含翻转、90 度旋转、小幅仿射变换、亮度/对比度/Gamma/颜色扰动。`basic` 适合先做稳定 baseline；`strong` 用于后续更激进实验。
+
+新月体可以先做二分类任务，把细胞性、纤维细胞性、纤维性新月体统一映射为 class 1：
+
+```bash
+cd /root/workspace/hezhongyi-unet_segm
+conda activate unet_kidney
+DATA=/root/rivermind-data/dataspace
+
+python scripts/prepare_hzy_glomerulus_lesion_crops.py \
+  --tasks crescent_binary \
+  --images-dir $DATA/HZY_HSPN_export_ds025/images \
+  --annotations-dir $DATA/HZY_HSPN_export_ds025/annotations \
+  --output-root $DATA/HZY_HSPN_glomerulus_lesion_tasks_crescent_binary \
+  --crop-size 512 \
+  --margin 64 \
+  --min-source-crop-size 384 \
+  --val-ratio 0.2 \
+  --min-positive-pixels 8 \
+  --negative-ratio 0.5 \
+  --max-background-crops-per-slide 6 \
+  --overwrite
+```
+
+推荐先用 Focal CE + Tversky 跑二分类新月体：
+
+```bash
+mkdir -p logs
+
+PYTHONUNBUFFERED=1 nohup python scripts/train_hzy_lesion_task_models.py \
+  --tasks crescent_binary \
+  --tiles-root $DATA/HZY_HSPN_glomerulus_lesion_tasks_crescent_binary \
+  --checkpoint-root $DATA/checkpoints/hzy_hspn_glomerulus_lesion_tasks_crescent_binary \
+  --base-checkpoint $DATA/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --epochs 50 \
+  --batch-size 8 \
+  --learning-rate 1e-5 \
+  --scale 1.0 \
+  --amp \
+  --optimizer adamw \
+  --background-weight 0.10 \
+  --foreground-weight 1.0 \
+  --foreground-dice-only \
+  --loss-mode focal_tversky \
+  --focal-gamma 2.0 \
+  --tversky-alpha 0.3 \
+  --tversky-beta 0.7 \
+  --tversky-gamma 1.33 \
+  --augmentation basic \
+  --wandb-mode disabled \
+  > logs/train_hzy_glom_crop_crescent_binary.log 2>&1 &
+```
+
+增生类病变仍建议优先提高分辨率并使用 Focal Tversky：
+
+```bash
+python scripts/prepare_hzy_glomerulus_lesion_crops.py \
+  --tasks proliferation \
+  --images-dir $DATA/HZY_HSPN_export_ds025/images \
+  --annotations-dir $DATA/HZY_HSPN_export_ds025/annotations \
+  --output-root $DATA/HZY_HSPN_glomerulus_lesion_tasks_proliferation_768 \
+  --crop-size 768 \
+  --margin 24 \
+  --min-source-crop-size 256 \
+  --val-ratio 0.2 \
+  --min-positive-pixels 4 \
+  --negative-ratio 0.25 \
+  --max-background-crops-per-slide 2 \
+  --overwrite
+
+PYTHONUNBUFFERED=1 nohup python scripts/train_hzy_lesion_task_models.py \
+  --tasks proliferation \
+  --tiles-root $DATA/HZY_HSPN_glomerulus_lesion_tasks_proliferation_768 \
+  --checkpoint-root $DATA/checkpoints/hzy_hspn_glomerulus_lesion_tasks_proliferation_768 \
+  --base-checkpoint $DATA/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --epochs 50 \
+  --batch-size 4 \
+  --learning-rate 1e-5 \
+  --scale 1.0 \
+  --amp \
+  --optimizer adamw \
+  --background-weight 0.03 \
+  --foreground-weight 1.5 \
+  --foreground-dice-only \
+  --loss-mode focal_tversky \
+  --focal-gamma 2.0 \
+  --tversky-alpha 0.25 \
+  --tversky-beta 0.75 \
+  --tversky-gamma 1.33 \
+  --augmentation basic \
+  --wandb-mode disabled \
+  > logs/train_hzy_glom_crop_proliferation_768.log 2>&1 &
+```
+
+训练日志中应确认：
+
+```text
+loss_mode: focal_tversky
+augmentation: basic
+foreground dice: True
+```
+
 ---
 
 # HuBMAP 肾小球分割工程说明

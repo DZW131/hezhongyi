@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument("--annotations-dir", default=DEFAULT_ANNOTATIONS_DIR, help="Directory containing scene JSON annotations")
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT, help="Root directory for grouped lesion tile datasets")
     parser.add_argument("--tasks", nargs="*", default=[],
-                        help="Optional task slugs/names to prepare: proliferation, crescent, other_lesions")
+                        help="Optional task slugs/names to prepare: proliferation, crescent, crescent_binary, other_lesions")
     parser.add_argument("--annotation-json-suffix", default=".json", help="Suffix for scene annotation JSON files")
     parser.add_argument("--tile-size", type=int, default=512, help="Tile size for lesion crops")
     parser.add_argument("--stride", type=int, default=512, help="Sliding-window stride")
@@ -360,15 +360,11 @@ def prepare_one_task(args, task: LesionTask, slide_ids: Sequence[str], split_map
             val_count,
         )
 
-    class_mapping = {
-        "0": "background",
-        **{str(index): label.label for index, label in enumerate(task.labels, start=1)},
-    }
     summary = {
         "task_name": task.name,
         "task_slug": task.slug,
         "num_classes": task.num_classes,
-        "class_mapping": class_mapping,
+        "class_mapping": task.class_mapping,
         "label_counts_expected": {label.label: label.count for label in task.labels},
         "feature_counts_observed": dict(global_feature_counts),
         "class_pixel_counts": dict(global_class_pixels),

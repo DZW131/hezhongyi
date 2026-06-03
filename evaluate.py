@@ -1,38 +1,10 @@
 from typing import Dict, Optional, Tuple
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from tqdm import tqdm
 
-from utils.dice_score import dice_loss
+from utils.losses import compute_segmentation_loss
 from utils.segmentation_metrics import SegmentationMetricAccumulator, logits_to_labels
-
-
-def _compute_validation_loss(
-    logits: torch.Tensor,
-    true_masks: torch.Tensor,
-    n_classes: int,
-    class_weights: Optional[torch.Tensor] = None,
-    foreground_dice_only: bool = False,
-    ce_weight: float = 1.0,
-    dice_weight: float = 1.0,
-) -> torch.Tensor:
-    if n_classes == 1:
-        loss = nn.BCEWithLogitsLoss()(logits.squeeze(1), true_masks.float())
-        loss += dice_loss(torch.sigmoid(logits.squeeze(1)), true_masks.float(), multiclass=False)
-        return loss
-
-    ce_loss = nn.CrossEntropyLoss(weight=class_weights)(logits, true_masks)
-    pred_probs = F.softmax(logits, dim=1).float()
-    true_one_hot = F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float()
-
-    if foreground_dice_only and n_classes > 1:
-        pred_probs = pred_probs[:, 1:]
-        true_one_hot = true_one_hot[:, 1:]
-
-    foreground_loss = dice_loss(pred_probs, true_one_hot, multiclass=True)
-    return ce_weight * ce_loss + dice_weight * foreground_loss
 
 
 @torch.inference_mode()
@@ -46,6 +18,14 @@ def evaluate(
     foreground_dice_only: bool = False,
     ce_weight: float = 1.0,
     dice_weight: float = 1.0,
+    loss_mode: str = 'ce_dice',
+    focal_weight: float = 1.0,
+    focal_gamma: float = 2.0,
+    tversky_weight: float = 1.0,
+    tversky_alpha: float = 0.3,
+    tversky_beta: float = 0.7,
+    tversky_gamma: float = 1.0,
+    generalized_dice_weight: float = 1.0,
 ) -> Tuple[Dict[str, float], Optional[Dict[str, torch.Tensor]]]:
     net.eval()
     num_val_batches = len(dataloader)
@@ -71,7 +51,7 @@ def evaluate(
             mask_true = mask_true.to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
             logits = net(image)
-            loss = _compute_validation_loss(
+            loss = compute_segmentation_loss(
                 logits,
                 mask_true,
                 net.n_classes,
@@ -79,6 +59,14 @@ def evaluate(
                 foreground_dice_only=foreground_dice_only,
                 ce_weight=ce_weight,
                 dice_weight=dice_weight,
+                loss_mode=loss_mode,
+                focal_weight=focal_weight,
+                focal_gamma=focal_gamma,
+                tversky_weight=tversky_weight,
+                tversky_alpha=tversky_alpha,
+                tversky_beta=tversky_beta,
+                tversky_gamma=tversky_gamma,
+                generalized_dice_weight=generalized_dice_weight,
             )
             running_loss += loss.item()
             metrics.update(logits, mask_true)

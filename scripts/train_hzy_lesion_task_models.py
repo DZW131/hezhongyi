@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument("--base-checkpoint", default=DEFAULT_BASE_CHECKPOINT,
                         help="Checkpoint used to initialize matching model tensors")
     parser.add_argument("--tasks", nargs="*", default=[],
-                        help="Optional task slugs/names to train: proliferation, crescent, other_lesions")
+                        help="Optional task slugs/names to train: proliferation, crescent, crescent_binary, other_lesions")
     parser.add_argument("--epochs", type=int, default=50, help="Training epochs per lesion task model")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=1e-5, help="Learning rate")
@@ -40,6 +40,26 @@ def parse_args():
                         help="Include background in Dice loss. By default lesion tasks use foreground-only Dice")
     parser.add_argument("--ce-weight", type=float, default=1.0, help="CrossEntropy loss multiplier")
     parser.add_argument("--dice-weight", type=float, default=1.0, help="Dice loss multiplier")
+    parser.add_argument("--loss-mode", choices=(
+        "ce_dice",
+        "focal_dice",
+        "tversky",
+        "focal_tversky",
+        "generalized_dice",
+        "ce_generalized_dice",
+    ), default="ce_dice", help="Loss recipe passed to train.py")
+    parser.add_argument("--focal-weight", type=float, default=1.0, help="Focal CE loss multiplier")
+    parser.add_argument("--focal-gamma", type=float, default=2.0, help="Focal CE gamma")
+    parser.add_argument("--tversky-weight", type=float, default=1.0, help="Tversky / Focal Tversky loss multiplier")
+    parser.add_argument("--tversky-alpha", type=float, default=0.3, help="Tversky false-positive penalty")
+    parser.add_argument("--tversky-beta", type=float, default=0.7, help="Tversky false-negative penalty")
+    parser.add_argument("--tversky-gamma", type=float, default=1.0, help="Focal Tversky exponent")
+    parser.add_argument("--generalized-dice-weight", type=float, default=1.0,
+                        help="Generalized Dice loss multiplier")
+    parser.add_argument("--augmentation", choices=("off", "basic", "strong"), default="off",
+                        help="Training-only augmentation mode passed to train.py")
+    parser.add_argument("--augmentation-seed", type=int, default=42,
+                        help="Random seed used by train.py augmentation")
     parser.add_argument("--skip-existing", action="store_true", default=False,
                         help="Skip a task if checkpoint best.pth already exists")
     parser.add_argument("--dry-run", action="store_true", default=False, help="Print commands without running them")
@@ -161,6 +181,26 @@ def build_train_command(args, task) -> list:
         str(args.ce_weight),
         "--dice-weight",
         str(args.dice_weight),
+        "--loss-mode",
+        args.loss_mode,
+        "--focal-weight",
+        str(args.focal_weight),
+        "--focal-gamma",
+        str(args.focal_gamma),
+        "--tversky-weight",
+        str(args.tversky_weight),
+        "--tversky-alpha",
+        str(args.tversky_alpha),
+        "--tversky-beta",
+        str(args.tversky_beta),
+        "--tversky-gamma",
+        str(args.tversky_gamma),
+        "--generalized-dice-weight",
+        str(args.generalized_dice_weight),
+        "--augmentation",
+        args.augmentation,
+        "--augmentation-seed",
+        str(args.augmentation_seed),
     ]
     if args.amp:
         command.append("--amp")

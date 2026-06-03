@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, Subset, random_split
 from tqdm import tqdm
@@ -23,8 +21,8 @@ except ImportError:
 from evaluate import evaluate
 from unet import UNet
 from utils.checkpoint_io import load_torch_state
-from utils.data_loading import BasicDataset, CarvanaDataset, load_image
-from utils.dice_score import dice_loss
+from utils.data_loading import BasicDataset, CarvanaDataset, create_train_transform
+from utils.losses import AVAILABLE_LOSS_MODES, compute_segmentation_loss
 from utils.segmentation_metrics import format_metrics
 from utils.visualization import save_segmentation_preview, save_training_curves
 
@@ -68,37 +66,11 @@ def parse_class_weights(class_weights: str, n_classes: int, device: torch.device
     return torch.tensor(values, dtype=torch.float32, device=device)
 
 
-def compute_segmentation_loss(
-    logits: torch.Tensor,
-    true_masks: torch.Tensor,
-    n_classes: int,
-    class_weights: Optional[torch.Tensor] = None,
-    foreground_dice_only: bool = False,
-    ce_weight: float = 1.0,
-    dice_weight: float = 1.0,
-) -> torch.Tensor:
-    if n_classes == 1:
-        loss = nn.BCEWithLogitsLoss()(logits.squeeze(1), true_masks.float())
-        loss += dice_loss(torch.sigmoid(logits.squeeze(1)), true_masks.float(), multiclass=False)
-        return loss
-
-    ce_loss = nn.CrossEntropyLoss(weight=class_weights)(logits, true_masks)
-    pred_probs = F.softmax(logits, dim=1).float()
-    true_one_hot = F.one_hot(true_masks, n_classes).permute(0, 3, 1, 2).float()
-
-    if foreground_dice_only and n_classes > 1:
-        pred_probs = pred_probs[:, 1:]
-        true_one_hot = true_one_hot[:, 1:]
-
-    foreground_loss = dice_loss(pred_probs, true_one_hot, multiclass=True)
-    return ce_weight * ce_loss + dice_weight * foreground_loss
-
-
-def create_dataset(images_dir: Path, masks_dir: Path, img_scale: float):
+def create_dataset(images_dir: Path, masks_dir: Path, img_scale: float, transform=None):
     try:
-        return CarvanaDataset(images_dir, masks_dir, img_scale)
+        return CarvanaDataset(images_dir, masks_dir, img_scale, transform=transform)
     except (AssertionError, RuntimeError, IndexError):
-        return BasicDataset(images_dir, masks_dir, img_scale)
+        return BasicDataset(images_dir, masks_dir, img_scale, transform=transform)
 
 
 def init_experiment(config: Dict[str, object], mode: str):
@@ -332,21 +304,39 @@ def train_model(
     foreground_dice_only: bool = False,
     ce_weight: float = 1.0,
     dice_weight: float = 1.0,
+    loss_mode: str = 'ce_dice',
+    focal_weight: float = 1.0,
+    focal_gamma: float = 2.0,
+    tversky_weight: float = 1.0,
+    tversky_alpha: float = 0.3,
+    tversky_beta: float = 0.7,
+    tversky_gamma: float = 1.0,
+    generalized_dice_weight: float = 1.0,
+    augmentation: str = 'off',
+    augmentation_seed: int = 42,
 ):
     if (val_images_dir is None) != (val_masks_dir is None):
         raise ValueError('Validation image and mask directories must be provided together.')
 
     configure_runtime(device, enable_tf32=enable_tf32, cudnn_benchmark=cudnn_benchmark, matmul_precision=matmul_precision)
+    train_transform = create_train_transform(augmentation, seed=augmentation_seed)
 
     if val_images_dir is not None and val_masks_dir is not None:
-        train_set = create_dataset(train_images_dir, train_masks_dir, img_scale)
+        train_set = create_dataset(train_images_dir, train_masks_dir, img_scale, transform=train_transform)
         val_set = create_dataset(val_images_dir, val_masks_dir, img_scale)
         n_train = len(train_set)
         n_val = len(val_set)
     else:
-        dataset = create_dataset(train_images_dir, train_masks_dir, img_scale)
-        n_train, n_val = determine_split_sizes(len(dataset), val_percent)
-        train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+        train_dataset = create_dataset(train_images_dir, train_masks_dir, img_scale, transform=train_transform)
+        val_dataset = create_dataset(train_images_dir, train_masks_dir, img_scale)
+        n_train, n_val = determine_split_sizes(len(train_dataset), val_percent)
+        train_indices, val_indices = random_split(
+            range(len(train_dataset)),
+            [n_train, n_val],
+            generator=torch.Generator().manual_seed(0),
+        )
+        train_set = Subset(train_dataset, list(train_indices))
+        val_set = Subset(val_dataset, list(val_indices))
 
     loader_args = build_dataloader_args(
         batch_size=batch_size,
@@ -412,6 +402,16 @@ def train_model(
             foreground_dice_only=foreground_dice_only,
             ce_weight=ce_weight,
             dice_weight=dice_weight,
+            loss_mode=loss_mode,
+            focal_weight=focal_weight,
+            focal_gamma=focal_gamma,
+            tversky_weight=tversky_weight,
+            tversky_alpha=tversky_alpha,
+            tversky_beta=tversky_beta,
+            tversky_gamma=tversky_gamma,
+            generalized_dice_weight=generalized_dice_weight,
+            augmentation=augmentation,
+            augmentation_seed=augmentation_seed,
         ),
         mode=wandb_mode,
     )
@@ -435,7 +435,9 @@ def train_model(
         '    prefetch_factor:     %s\n'
         '    val_frequency:       %s\n'
         '    class_weights:       %s\n'
-        '    foreground dice:     %s',
+        '    foreground dice:     %s\n'
+        '    loss_mode:           %s\n'
+        '    augmentation:        %s',
         epochs,
         batch_size,
         learning_rate,
@@ -454,6 +456,8 @@ def train_model(
         val_frequency,
         class_weights or 'none',
         foreground_dice_only,
+        loss_mode,
+        augmentation,
     )
 
     best_metric_value = float('-inf')
@@ -497,6 +501,14 @@ def train_model(
                             foreground_dice_only=foreground_dice_only,
                             ce_weight=ce_weight,
                             dice_weight=dice_weight,
+                            loss_mode=loss_mode,
+                            focal_weight=focal_weight,
+                            focal_gamma=focal_gamma,
+                            tversky_weight=tversky_weight,
+                            tversky_alpha=tversky_alpha,
+                            tversky_beta=tversky_beta,
+                            tversky_gamma=tversky_gamma,
+                            generalized_dice_weight=generalized_dice_weight,
                         )
 
                     optimizer.zero_grad(set_to_none=True)
@@ -533,6 +545,14 @@ def train_model(
                     foreground_dice_only=foreground_dice_only,
                     ce_weight=ce_weight,
                     dice_weight=dice_weight,
+                    loss_mode=loss_mode,
+                    focal_weight=focal_weight,
+                    focal_gamma=focal_gamma,
+                    tversky_weight=tversky_weight,
+                    tversky_alpha=tversky_alpha,
+                    tversky_beta=tversky_beta,
+                    tversky_gamma=tversky_gamma,
+                    generalized_dice_weight=generalized_dice_weight,
                 )
                 validation_seconds = time.perf_counter() - validation_start
                 scheduler.step(val_metrics[checkpoint_metric])
@@ -736,6 +756,20 @@ def get_args():
                         help='For multi-class training, compute Dice loss on foreground classes only')
     parser.add_argument('--ce-weight', type=float, default=1.0, help='CrossEntropy loss multiplier')
     parser.add_argument('--dice-weight', type=float, default=1.0, help='Dice loss multiplier')
+    parser.add_argument('--loss-mode', choices=AVAILABLE_LOSS_MODES, default='ce_dice',
+                        help='Loss recipe used for multi-class segmentation')
+    parser.add_argument('--focal-weight', type=float, default=1.0, help='Focal CE loss multiplier')
+    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal CE gamma')
+    parser.add_argument('--tversky-weight', type=float, default=1.0, help='Tversky / Focal Tversky loss multiplier')
+    parser.add_argument('--tversky-alpha', type=float, default=0.3, help='Tversky false-positive penalty')
+    parser.add_argument('--tversky-beta', type=float, default=0.7, help='Tversky false-negative penalty')
+    parser.add_argument('--tversky-gamma', type=float, default=1.0, help='Focal Tversky exponent')
+    parser.add_argument('--generalized-dice-weight', type=float, default=1.0,
+                        help='Generalized Dice loss multiplier')
+    parser.add_argument('--augmentation', choices=('off', 'basic', 'strong'), default='off',
+                        help='Training-only image/mask augmentation mode')
+    parser.add_argument('--augmentation-seed', type=int, default=42,
+                        help='Random seed used by the training augmentation pipeline')
 
     return parser.parse_args()
 
@@ -774,6 +808,16 @@ def run_training(args, model, device):
         foreground_dice_only=args.foreground_dice_only,
         ce_weight=args.ce_weight,
         dice_weight=args.dice_weight,
+        loss_mode=args.loss_mode,
+        focal_weight=args.focal_weight,
+        focal_gamma=args.focal_gamma,
+        tversky_weight=args.tversky_weight,
+        tversky_alpha=args.tversky_alpha,
+        tversky_beta=args.tversky_beta,
+        tversky_gamma=args.tversky_gamma,
+        generalized_dice_weight=args.generalized_dice_weight,
+        augmentation=args.augmentation,
+        augmentation_seed=args.augmentation_seed,
     )
 
 

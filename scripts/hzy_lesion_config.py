@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 
 @dataclass(frozen=True)
@@ -7,6 +7,7 @@ class LesionLabel:
     label: str
     slug: str
     count: int
+    class_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -14,14 +15,35 @@ class LesionTask:
     name: str
     slug: str
     labels: List[LesionLabel]
+    class_names: Optional[Dict[int, str]] = None
 
     @property
     def num_classes(self) -> int:
+        explicit_class_ids = [label.class_id for label in self.labels if label.class_id is not None]
+        if explicit_class_ids:
+            return max(explicit_class_ids) + 1
         return len(self.labels) + 1
 
     @property
     def class_map(self) -> Dict[str, int]:
-        return {label.label: index for index, label in enumerate(self.labels, start=1)}
+        return {
+            label.label: label.class_id if label.class_id is not None else index
+            for index, label in enumerate(self.labels, start=1)
+        }
+
+    @property
+    def class_mapping(self) -> Dict[str, str]:
+        if self.class_names:
+            foreground = {
+                str(class_id): self.class_names[class_id]
+                for class_id in sorted(self.class_names)
+            }
+        else:
+            foreground = {
+                str(index): label.label
+                for index, label in enumerate(self.labels, start=1)
+            }
+        return {"0": "background", **foreground}
 
 
 GLOMERULUS_LABELS: List[LesionLabel] = [
@@ -40,6 +62,11 @@ CRESCENT_LABELS: List[LesionLabel] = [
     LesionLabel("纤维性新月体", "fibrous_crescent", 22),
 ]
 
+CRESCENT_BINARY_LABELS: List[LesionLabel] = [
+    LesionLabel(label.label, label.slug, label.count, class_id=1)
+    for label in CRESCENT_LABELS
+]
+
 OTHER_LESION_LABELS: List[LesionLabel] = [
     LesionLabel("节段硬化", "segmental_sclerosis", 30),
     LesionLabel("节段球囊粘连", "segmental_capsular_adhesion", 16),
@@ -50,6 +77,7 @@ OTHER_LESION_LABELS: List[LesionLabel] = [
 LESION_TASKS: List[LesionTask] = [
     LesionTask("细胞增生类病变", "proliferation", PROLIFERATION_LABELS),
     LesionTask("新月体类病变", "crescent", CRESCENT_LABELS),
+    LesionTask("新月体二分类", "crescent_binary", CRESCENT_BINARY_LABELS, class_names={1: "新月体"}),
     LesionTask("其他病变", "other_lesions", OTHER_LESION_LABELS),
 ]
 
