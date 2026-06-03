@@ -534,6 +534,53 @@ python scripts/train_hzy_lesion_task_models.py \
 
 下一步量化统计时，再把“肾小球实例分割结果”和“各任务组模型预测结果”进行空间匹配，得到单个肾小球是否存在新月体、节段硬化、系膜增生等指标。
 
+### I.1 推荐：基于单个肾小球 crop 的病变分割
+
+增生类病变面积很小，直接在整张 scene 的滑窗 tile 里训练时，前景像素容易被大量背景稀释。更推荐先用医生肾小球标注裁出单个肾小球局部 crop，再在 crop 内生成病变 mask 训练：
+
+```bash
+python scripts/prepare_hzy_glomerulus_lesion_crops.py \
+  --tasks proliferation crescent \
+  --images-dir /root/datasets/HZY_HSPN_export_ds025/images \
+  --annotations-dir /root/datasets/HZY_HSPN_export_ds025/annotations \
+  --output-root /root/datasets/HZY_HSPN_glomerulus_lesion_tasks \
+  --crop-size 512 \
+  --margin 96 \
+  --min-source-crop-size 384 \
+  --val-ratio 0.2 \
+  --min-positive-pixels 8 \
+  --negative-ratio 1.0 \
+  --overwrite
+```
+
+输出结构仍与 `train_hzy_lesion_task_models.py` 兼容：
+
+```text
+/root/datasets/HZY_HSPN_glomerulus_lesion_tasks/proliferation/train/images
+/root/datasets/HZY_HSPN_glomerulus_lesion_tasks/proliferation/train/masks
+/root/datasets/HZY_HSPN_glomerulus_lesion_tasks/crescent/train/images
+/root/datasets/HZY_HSPN_glomerulus_lesion_tasks/crescent/train/masks
+```
+
+训练时只需要把 `--tiles-root` 指到新的 crop 数据集：
+
+```bash
+python scripts/train_hzy_lesion_task_models.py \
+  --tasks proliferation \
+  --tiles-root /root/datasets/HZY_HSPN_glomerulus_lesion_tasks \
+  --checkpoint-root /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_glomerulus_lesion_tasks \
+  --base-checkpoint /root/Pytorch-UNet/Pytorch-UNet-master/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth \
+  --epochs 50 \
+  --batch-size 8 \
+  --learning-rate 1e-5 \
+  --scale 1.0 \
+  --amp \
+  --optimizer adamw \
+  --wandb-mode disabled
+```
+
+训练阶段使用医生肾小球标注裁 crop；推理和量化阶段再使用肾小球模型预测结果生成实例 crop，并将病变预测映射回原图做单肾小球统计。
+
 ---
 
 # HuBMAP 肾小球分割工程说明
