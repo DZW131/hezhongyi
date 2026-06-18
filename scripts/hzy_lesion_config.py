@@ -56,6 +56,11 @@ PROLIFERATION_LABELS: List[LesionLabel] = [
     LesionLabel("毛细血管内细胞增生", "endocapillary_hypercellularity", 179),
 ]
 
+PROLIFERATION_BINARY_LABELS: List[LesionLabel] = [
+    LesionLabel(label.label, label.slug, label.count, class_id=1)
+    for label in PROLIFERATION_LABELS
+]
+
 CRESCENT_LABELS: List[LesionLabel] = [
     LesionLabel("细胞性新月体", "cellular_crescent", 56),
     LesionLabel("纤维细胞性新月体", "fibrocellular_crescent", 42),
@@ -75,6 +80,7 @@ OTHER_LESION_LABELS: List[LesionLabel] = [
 ]
 
 LESION_TASKS: List[LesionTask] = [
+    LesionTask("proliferation binary", "proliferation_binary", PROLIFERATION_BINARY_LABELS, class_names={1: "proliferation"}),
     LesionTask("细胞增生类病变", "proliferation", PROLIFERATION_LABELS),
     LesionTask("新月体类病变", "crescent", CRESCENT_LABELS),
     LesionTask("新月体二分类", "crescent_binary", CRESCENT_BINARY_LABELS, class_names={1: "新月体"}),
