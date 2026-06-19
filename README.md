@@ -740,6 +740,41 @@ CUDA_VISIBLE_DEVICES=1 python scripts/train_hzy_detection_boxes.py \
 
 如果需要调试训练不稳定，可加 `--fail-on-nonfinite-loss`；默认行为是遇到 NaN/Inf loss 时跳过该 batch，并在 `history.csv` 中记录 `nonfinite_batches`。
 
+### I.4 增生类病变 detection-first 当前推荐
+
+增生类病变也可以走 detection-first 路线，把“肾小球系膜细胞增生 + 毛细血管内细胞增生”合并为一个 `proliferation_binary` 前景类别。当前最稳的结果仍来自 COCO 预训练 Faster R-CNN 优化版：
+
+```bash
+python scripts/train_hzy_detection_boxes.py \
+  --data-root /home/duyanhong/Dataspace/HZY/HZY_HSPN_detection_boxes/proliferation_binary \
+  --output-dir /home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_detection_boxes/proliferation_binary_fasterrcnn_coco_aug_presence \
+  --epochs 60 \
+  --batch-size 4 \
+  --learning-rate 5e-5 \
+  --weight-decay 1e-4 \
+  --num-workers 4 \
+  --pretrained coco \
+  --augmentation basic \
+  --augmentation-seed 2026 \
+  --freeze-backbone-epochs 3 \
+  --detections-per-img 20 \
+  --nms-thresh 0.35 \
+  --lr-step-size 25 \
+  --lr-gamma 0.5 \
+  --score-thresholds 0.03,0.05,0.1,0.2,0.3,0.4,0.5,0.6 \
+  --primary-threshold 0.2 \
+  --checkpoint-metric presence_f1 \
+  --save-best-metrics box_f1,presence_f1 \
+  --match-iou 0.1 \
+  --device cuda
+```
+
+当前使用建议：
+
+- 少漏检筛查：使用 `best.pth`，阈值 `0.2`。
+- 展示/定位更干净：使用 `latest.pth`，阈值 `0.4/0.5`。
+- 已验证但不推荐作为主结果：随机增加阴性样本、直接套用 `--ensure-positive-batches`。增生任务更需要模型误报驱动的 hard-negative mining，或检测候选框后的二阶段分类器。
+
 ---
 
 # HuBMAP 肾小球分割工程说明
