@@ -775,6 +775,76 @@ python scripts/train_hzy_detection_boxes.py \
 - 展示/定位更干净：使用 `latest.pth`，阈值 `0.4/0.5`。
 - 已验证但不推荐作为主结果：随机增加阴性样本、直接套用 `--ensure-positive-batches`。增生任务更需要模型误报驱动的 hard-negative mining，或检测候选框后的二阶段分类器。
 
+### I.5 新月体子类三分类 ROI classifier
+
+新月体细分类不建议直接回到三分类像素分割作为主线。当前更稳的做法是先用新月体大类检测/分割确定候选区域，再对候选 ROI 做子类分类：
+
+- 细胞性新月体
+- 纤维细胞性新月体
+- 纤维性新月体
+
+先准备三类新月体 glomerulus crop：
+
+```bash
+python scripts/prepare_hzy_glomerulus_lesion_crops.py \
+  --images-dir /home/duyanhong/Dataspace/HZY/HZY_HSPN_export_ds025/images \
+  --annotations-dir /home/duyanhong/Dataspace/HZY/HZY_HSPN_export_ds025/annotations \
+  --output-root /home/duyanhong/Dataspace/HZY/HZY_HSPN_glomerulus_lesion_tasks_crescent_subtype_20260619 \
+  --tasks crescent \
+  --crop-size 512 \
+  --margin 64 \
+  --min-source-crop-size 384 \
+  --negative-ratio 0.5 \
+  --max-background-crops-per-slide 8 \
+  --seed 42 \
+  --overwrite
+```
+
+再从三类 mask 中抽取 lesion ROI 分类数据：
+
+```bash
+python scripts/prepare_hzy_crescent_subtype_rois.py \
+  --dataset-root /home/duyanhong/Dataspace/HZY/HZY_HSPN_glomerulus_lesion_tasks_crescent_subtype_20260619/crescent \
+  --output-root /home/duyanhong/Dataspace/HZY/HZY_HSPN_crescent_subtype_rois_20260619 \
+  --min-area 32 \
+  --box-margin 48 \
+  --crop-size 224 \
+  --overwrite
+```
+
+最后训练 ResNet18 三分类器：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/train_hzy_crescent_subtype_classifier.py \
+  --data-root /home/duyanhong/Dataspace/HZY/HZY_HSPN_crescent_subtype_rois_20260619 \
+  --output-dir /home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_crescent_subtype_classifier_resnet18_20260619 \
+  --epochs 50 \
+  --batch-size 16 \
+  --learning-rate 0.0001 \
+  --weight-decay 0.0001 \
+  --num-workers 4 \
+  --model resnet18 \
+  --pretrained imagenet \
+  --allow-random-init \
+  --freeze-backbone-epochs 3 \
+  --weighted-sampler \
+  --class-weights balanced \
+  --augmentation basic \
+  --save-montage \
+  --device cuda
+```
+
+5090 探路结果：
+
+| 数据 | 训练 ROI | 验证 ROI | Best epoch | Accuracy | Balanced Accuracy | Macro F1 | 说明 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `HZY_HSPN_crescent_subtype_rois_20260619` | 116 | 21 | 21 | 0.8095 | 0.8116 | 0.8026 | 验证集很小，仅作为 ROI 三分类路线可行性基线 |
+
+各类 F1：细胞性 `0.8235`，纤维细胞性 `0.7273`，纤维性 `0.8571`。混淆矩阵和预测明细见：
+
+- `/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_crescent_subtype_classifier_resnet18_20260619/analysis/best_confusion_matrix.csv`
+- `/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_crescent_subtype_classifier_resnet18_20260619/analysis/best_predictions.csv`
+
 ---
 
 # HuBMAP 肾小球分割工程说明
