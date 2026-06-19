@@ -156,3 +156,20 @@ def test_detection_box_flip_transforms_coordinates():
 
     assert horizontal.tolist() == [[12.0, 3.0, 18.0, 10.0]]
     assert vertical.tolist() == [[2.0, 20.0, 8.0, 27.0]]
+
+
+def test_positive_balanced_batch_sampler_keeps_positive_in_each_batch():
+    pytest.importorskip("torchvision")
+    from train_hzy_detection_boxes import PositiveBalancedBatchSampler
+
+    sampler = PositiveBalancedBatchSampler(
+        positive_indices=[0, 1],
+        negative_indices=[2, 3, 4, 5, 6],
+        batch_size=3,
+        seed=7,
+    )
+    batches = list(sampler)
+
+    assert batches
+    assert all(any(index in {0, 1} for index in batch) for batch in batches)
+    assert {2, 3, 4, 5, 6}.issubset({index for batch in batches for index in batch})

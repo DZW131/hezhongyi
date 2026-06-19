@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import random
 import sys
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Dict, List, Tuple
 
 import torch
 from PIL import Image, ImageEnhance
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torchvision.models.detection import FasterRCNN_MobileNet_V3_Large_FPN_Weights, fasterrcnn_mobilenet_v3_large_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.transforms import functional as F
@@ -41,9 +42,37 @@ class YoloBoxDataset(Dataset):
             self.image_paths = self.image_paths[:limit]
         if not self.image_paths:
             raise RuntimeError("No images found in {}".format(self.images_dir))
+        self.positive_indices, self.negative_indices = self._split_indices_by_label()
 
     def __len__(self):
         return len(self.image_paths)
+
+    @staticmethod
+    def _label_has_boxes(label_path: Path) -> bool:
+        if not label_path.exists():
+            return False
+        for line in label_path.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split()
+            if len(parts) != 5:
+                continue
+            try:
+                _, _, _, box_width, box_height = [float(item) for item in parts]
+            except ValueError:
+                continue
+            if box_width > 0 and box_height > 0:
+                return True
+        return False
+
+    def _split_indices_by_label(self) -> Tuple[List[int], List[int]]:
+        positive_indices = []
+        negative_indices = []
+        for index, image_path in enumerate(self.image_paths):
+            label_path = self.labels_dir / (image_path.stem + ".txt")
+            if self._label_has_boxes(label_path):
+                positive_indices.append(index)
+            else:
+                negative_indices.append(index)
+        return positive_indices, negative_indices
 
     def _read_boxes(self, label_path: Path, width: int, height: int) -> Tuple[torch.Tensor, torch.Tensor]:
         boxes = []
@@ -140,6 +169,58 @@ def collate_fn(batch):
     return list(images), list(targets)
 
 
+class PositiveBalancedBatchSampler(Sampler[List[int]]):
+    """Build batches with at least one positive image when positives exist."""
+
+    def __init__(self, positive_indices: List[int], negative_indices: List[int], batch_size: int, seed: int = 42):
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        self.positive_indices = list(positive_indices)
+        self.negative_indices = list(negative_indices)
+        self.batch_size = batch_size
+        self.seed = seed
+        self.epoch = 0
+        if not self.positive_indices:
+            self.num_batches = math.ceil(len(self.negative_indices) / max(batch_size, 1))
+        elif batch_size == 1:
+            self.num_batches = max(len(self.positive_indices), 1)
+        else:
+            self.num_batches = max(
+                math.ceil(len(self.negative_indices) / max(batch_size - 1, 1)),
+                math.ceil(len(self.positive_indices) / max(1, 1)),
+                1,
+            )
+
+    def __len__(self):
+        return self.num_batches
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        self.epoch += 1
+        positives = list(self.positive_indices)
+        negatives = list(self.negative_indices)
+        rng.shuffle(positives)
+        rng.shuffle(negatives)
+
+        if not positives:
+            all_indices = negatives
+            for start in range(0, len(all_indices), self.batch_size):
+                yield all_indices[start:start + self.batch_size]
+            return
+
+        negative_cursor = 0
+        for batch_index in range(self.num_batches):
+            batch = [positives[batch_index % len(positives)]]
+            while len(batch) < self.batch_size and negative_cursor < len(negatives):
+                batch.append(negatives[negative_cursor])
+                negative_cursor += 1
+            while len(batch) < self.batch_size:
+                pool = positives if not negatives else positives + negatives
+                batch.append(rng.choice(pool))
+            rng.shuffle(batch)
+            yield batch
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train a torchvision Faster R-CNN detector on HZY lesion bbox data.",
@@ -157,6 +238,8 @@ def parse_args():
     parser.add_argument("--augmentation", choices=("off", "basic", "strong"), default="off",
                         help="Training-only detection augmentation")
     parser.add_argument("--augmentation-seed", type=int, default=42, help="Seed for deterministic per-sample augmentation")
+    parser.add_argument("--ensure-positive-batches", action="store_true", default=False,
+                        help="Oversample positives so every train batch contains at least one positive image")
     parser.add_argument("--freeze-backbone-epochs", type=int, default=0,
                         help="Freeze detector backbone for the first N epochs")
     parser.add_argument("--detections-per-img", type=int, default=100,
@@ -172,6 +255,8 @@ def parse_args():
         default="box_f1,presence_f1",
         help="Comma-separated primary-threshold metrics to save as best_<metric>.pth in addition to best.pth",
     )
+    parser.add_argument("--fail-on-nonfinite-loss", action="store_true", default=False,
+                        help="Raise an error instead of skipping a batch when detection loss is NaN/Inf")
     parser.add_argument("--match-iou", type=float, default=0.1, help="Relaxed IoU threshold for matching")
     parser.add_argument("--no-center-hit", action="store_true", default=False, help="Disable center-inside-GT matching")
     parser.add_argument("--limit-train", type=int, default=0, help="Optional train sample cap for smoke tests")
@@ -323,14 +408,28 @@ def main():
         seed=args.augmentation_seed,
     )
     val_dataset = YoloBoxDataset(Path(args.data_root), "val", limit=args.limit_val)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-        pin_memory=device.type == "cuda",
-    )
+    if args.ensure_positive_batches and train_dataset.positive_indices:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=PositiveBalancedBatchSampler(
+                train_dataset.positive_indices,
+                train_dataset.negative_indices,
+                batch_size=args.batch_size,
+                seed=args.augmentation_seed,
+            ),
+            num_workers=args.num_workers,
+            collate_fn=collate_fn,
+            pin_memory=device.type == "cuda",
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn,
+            pin_memory=device.type == "cuda",
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -365,6 +464,7 @@ def main():
         model.train()
         epoch_loss = 0.0
         batches = 0
+        nonfinite_batches = 0
         for images, targets in tqdm(train_loader, desc="Train detector epoch {}".format(epoch), unit="batch"):
             images = [image.to(device) for image in images]
             targets = [
@@ -373,6 +473,22 @@ def main():
             ]
             loss_dict = model(images, targets)
             loss = sum(value for value in loss_dict.values())
+            if not torch.isfinite(loss):
+                nonfinite_batches += 1
+                loss_parts = {
+                    key: float(value.detach().cpu()) if torch.isfinite(value.detach()).item() else str(value.detach().cpu().item())
+                    for key, value in loss_dict.items()
+                }
+                message = "Non-finite detection loss at epoch {} batch {}; parts={}".format(
+                    epoch,
+                    batches + nonfinite_batches,
+                    loss_parts,
+                )
+                if args.fail_on_nonfinite_loss:
+                    raise FloatingPointError(message)
+                logging.warning("%s; skipping optimizer step", message)
+                optimizer.zero_grad(set_to_none=True)
+                continue
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -391,6 +507,7 @@ def main():
         row = {
             "epoch": epoch,
             "train_loss": epoch_loss / max(batches, 1),
+            "nonfinite_batches": nonfinite_batches,
             **{key: primary[key] for key in (
                 "presence_precision",
                 "presence_recall",
@@ -439,6 +556,8 @@ def main():
             primary["box_recall"],
             primary["presence_f1"],
         )
+        if nonfinite_batches:
+            logging.warning("epoch=%s skipped %s non-finite-loss batches", epoch, nonfinite_batches)
 
     logging.info("Training complete. Best %s=%.4f at %s", args.checkpoint_metric, best_score, output_dir / "best.pth")
 

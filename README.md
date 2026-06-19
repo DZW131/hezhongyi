@@ -696,6 +696,50 @@ augmentation: basic
 foreground dice: True
 ```
 
+### I.3 新月体 detection-first 框检测流程
+
+当分割模型已经能召回新月体，但分割转框出现过多假阳性框时，可以复用增生类病变的 detection-first 流程：先把 `crescent_binary` mask 转为 bbox，再训练 Faster R-CNN 做“有没有、在哪里”的检测主线。分割模型继续用于框内形态和面积辅助评估。
+
+先生成新月体 box 数据集：
+
+```bash
+python scripts/prepare_hzy_detection_boxes.py \
+  --dataset-root $DATA/HZY_HSPN_glomerulus_lesion_tasks_crescent_binary/crescent_binary \
+  --output-root $DATA/HZY_HSPN_detection_boxes/crescent_binary \
+  --class-mode binary \
+  --class-name crescent \
+  --min-area 16 \
+  --box-margin 4 \
+  --link-mode symlink \
+  --overwrite
+```
+
+再训练 balanced Faster R-CNN。`--ensure-positive-batches` 会过采样阳性样本，保证每个训练 batch 至少包含一个阳性框，适合新月体这种阳性少、阴性多的数据分布：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/train_hzy_detection_boxes.py \
+  --data-root $DATA/HZY_HSPN_detection_boxes/crescent_binary \
+  --output-dir $DATA/checkpoints/hzy_hspn_detection_boxes/crescent_binary_fasterrcnn_coco_aug_presence_balanced \
+  --epochs 50 \
+  --batch-size 4 \
+  --learning-rate 0.00005 \
+  --weight-decay 0.0001 \
+  --num-workers 4 \
+  --pretrained coco \
+  --augmentation basic \
+  --augmentation-seed 42 \
+  --ensure-positive-batches \
+  --detections-per-img 20 \
+  --nms-thresh 0.4 \
+  --score-thresholds 0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.7 \
+  --primary-threshold 0.3 \
+  --checkpoint-metric box_f1 \
+  --save-best-metrics box_f1,presence_f1 \
+  --match-iou 0.1
+```
+
+如果需要调试训练不稳定，可加 `--fail-on-nonfinite-loss`；默认行为是遇到 NaN/Inf loss 时跳过该 batch，并在 `history.csv` 中记录 `nonfinite_batches`。
+
 ---
 
 # HuBMAP 肾小球分割工程说明
