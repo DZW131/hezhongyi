@@ -131,16 +131,52 @@ def load_image(path: Path, device: torch.device) -> Tuple[torch.Tensor, Image.Im
     return tensor, image
 
 
-def overlay_heatmap(image: Image.Image, cam: np.ndarray, alpha: float = 0.45) -> Image.Image:
-    cam_uint8 = (cam * 255).astype(np.uint8)
-    cam_img = Image.fromarray(cam_uint8)
-    cam_img = cam_img.resize(image.size, Image.BILINEAR)
-    cam_array = np.array(cam_img)
-    heatmap = np.zeros((cam_array.shape[0], cam_array.shape[1], 3), dtype=np.uint8)
-    heatmap[..., 0] = cam_array
-    heatmap[..., 2] = (cam_array * 0.3).astype(np.uint8)
-    overlay = Image.blend(image, Image.fromarray(heatmap), alpha)
-    return overlay
+def _jet_colormap(value: float) -> Tuple[int, int, int]:
+    """Map a scalar in [0, 1] to a jet-color RGB tuple."""
+    value = max(0.0, min(1.0, float(value)))
+    if value < 0.125:
+        r, g, b = 0.0, 0.0, 0.5 + value * 4.0
+    elif value < 0.375:
+        r, g, b = 0.0, (value - 0.125) * 4.0, 1.0
+    elif value < 0.625:
+        r, g, b = (value - 0.375) * 4.0, 1.0, 1.0 - (value - 0.375) * 4.0
+    elif value < 0.875:
+        r, g, b = 1.0, 1.0 - (value - 0.625) * 4.0, 0.0
+    else:
+        r, g, b = 1.0 - (value - 0.875) * 4.0, 0.0, 0.0
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def _apply_jet(cam_flat: np.ndarray) -> np.ndarray:
+    """Vectorized jet colormap for a flat [N] array in [0,1] -> [N,3] uint8."""
+    v = np.clip(cam_flat, 0.0, 1.0)
+    r = np.zeros_like(v); g = np.zeros_like(v); b = np.zeros_like(v)
+    m1 = v < 0.125; r[m1] = 0; g[m1] = 0; b[m1] = 0.5 + v[m1] * 4.0
+    m2 = (v >= 0.125) & (v < 0.375); r[m2] = 0; g[m2] = (v[m2] - 0.125) * 4.0; b[m2] = 1.0
+    m3 = (v >= 0.375) & (v < 0.625); r[m3] = (v[m3] - 0.375) * 4.0; g[m3] = 1.0; b[m3] = 1.0 - (v[m3] - 0.375) * 4.0
+    m4 = (v >= 0.625) & (v < 0.875); r[m4] = 1.0; g[m4] = 1.0 - (v[m4] - 0.625) * 4.0; b[m4] = 0.0
+    m5 = v >= 0.875; r[m5] = 1.0 - (v[m5] - 0.875) * 4.0; g[m5] = 0.0; b[m5] = 0.0
+    rgb = np.stack([r, g, b], axis=-1)
+    return (rgb * 255).astype(np.uint8)
+
+
+def overlay_heatmap(image: Image.Image, cam: np.ndarray, alpha: float = 0.5) -> Image.Image:
+    """Overlay a jet-colored Grad-CAM heatmap onto the image.
+
+    The blend alpha is intensity-weighted: high-activation pixels are opaque red/yellow,
+    low-activation pixels stay close to the original image. This makes the region the
+    model is looking at clearly visible while preserving anatomical context elsewhere.
+    """
+    cam_resized = np.array(
+        Image.fromarray((cam * 255).astype(np.uint8)).resize(image.size, Image.BILINEAR)
+    ).astype(np.float32) / 255.0
+    cam_flat = cam_resized.reshape(-1)
+    jet_rgb = _apply_jet(cam_flat).reshape(*cam_resized.shape, 3)
+    base = np.array(image, dtype=np.float32)
+    # intensity-weighted alpha: low activation ~0, high activation ~alpha
+    local_alpha = (cam_resized[..., None] * alpha).clip(0, alpha)
+    overlay = base * (1.0 - local_alpha) + jet_rgb * local_alpha
+    return Image.fromarray(overlay.astype(np.uint8))
 
 
 def label_from_mask(data_root: Path, split: str, image_name: str) -> int:
@@ -151,22 +187,32 @@ def label_from_mask(data_root: Path, split: str, image_name: str) -> int:
     return int(mask.max() > 0)
 
 
-def build_montage(overlays: List[Image.Image], captions: List[str], output_path: Path,
-                  cell_size: int = 224, cols: int = 4) -> None:
-    if not overlays:
+def build_montage(records: List[Tuple[Image.Image, Image.Image, Image.Image, str]],
+                   output_path: Path, cell_size: int = 224, cols: int = 4) -> None:
+    """Build a 3-column-per-item montage: original | heatmap | overlay.
+
+    Each record is (original, heatmap_only, overlay, caption).
+    """
+    if not records:
         return
-    rows = int(np.ceil(len(overlays) / cols))
-    canvas = Image.new("RGB", (cols * cell_size, rows * (cell_size + 28)), color=(255, 255, 255))
-    for idx, (img, cap) in enumerate(zip(overlays, captions)):
-        x = (idx % cols) * cell_size
-        y = (idx // cols) * (cell_size + 28)
-        thumb = img.resize((cell_size, cell_size))
-        canvas.paste(thumb, (x, y))
-        draw = ImageDraw.Draw(canvas)
-        draw.rectangle((x, y + cell_size, x + cell_size, y + cell_size + 28), fill=(40, 40, 40))
-        draw.text((x + 4, y + cell_size + 6), cap, fill=(255, 255, 255))
+    triplets = cols
+    rows = int(np.ceil(len(records) / triplets))
+    label_h = 32
+    cell_w = cell_size
+    cell_h = cell_size + label_h
+    canvas = Image.new("RGB", (triplets * 3 * cell_w, rows * cell_h), color=(255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    for idx, (orig, heat, overlay, cap) in enumerate(records):
+        col = idx % triplets
+        row = idx // triplets
+        x0 = col * 3 * cell_w
+        y0 = row * cell_h
+        for j, img in enumerate((orig, heat, overlay)):
+            canvas.paste(img.resize((cell_w, cell_size)), (x0 + j * cell_w, y0))
+        draw.rectangle((x0, y0 + cell_size, x0 + 3 * cell_w, y0 + cell_size + label_h), fill=(30, 30, 30))
+        draw.text((x0 + 4, y0 + cell_size + 8), cap, fill=(255, 220, 0))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output_path)
+    canvas.save(output_path, quality=95)
 
 
 def main():
@@ -187,8 +233,7 @@ def main():
     cam_extractor = GradCAM(model, target_layer)
 
     rows: List[dict] = []
-    hard_neg_overlays: List[Tuple[Image.Image, str, float]] = []
-    all_overlays: List[Tuple[Image.Image, str]] = []
+    hard_neg_records: List[Tuple[Image.Image, Image.Image, Image.Image, str, float]] = []
 
     logging.info("Running Grad-CAM on %s crops from %s/%s ...", len(image_paths), data_root, args.split)
 
@@ -223,14 +268,17 @@ def main():
 
         if is_hard_neg:
             overlay = overlay_heatmap(pil_image, cam)
-            cap = "{} p={:.2f}".format(path.stem, prob_pos)
-            hard_neg_overlays.append((overlay, cap, prob_pos))
-            if args.save_all_overlays:
-                all_overlays.append((overlay, cap))
+            heatmap_only = Image.fromarray(
+                _apply_jet(cam.reshape(-1)).reshape(*cam.shape, 3)
+            ).resize(pil_image.size, Image.BILINEAR)
+            gt_str = "neg" if true_label == 0 else "pos"
+            pred_str = "pos" if pred == 1 else "neg"
+            cap = "{} | GT={} pred={} p={:.2f}".format(path.stem, gt_str, pred_str, prob_pos)
+            hard_neg_records.append((pil_image, heatmap_only, overlay, cap, prob_pos))
 
     cam_extractor.remove_hooks()
 
-    hard_neg_overlays.sort(key=lambda x: x[2], reverse=True)
+    hard_neg_records.sort(key=lambda x: x[4], reverse=True)
     rows.sort(key=lambda r: (r["is_hard_negative"] == 0, -r["prob_positive"]))
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -246,17 +294,21 @@ def main():
 
     overlays_dir = output_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
-    for overlay, cap, prob in hard_neg_overlays[:args.top_k]:
+    for orig, heat, overlay, cap, prob in hard_neg_records[:args.top_k]:
         name = cap.split(" ")[0]
-        overlay.save(overlays_dir / "{}_gradcam.jpg".format(name))
+        # save side-by-side: original | heatmap | overlay
+        side_by_side = Image.new("RGB", (pil_image.size[0] * 3, pil_image.size[1]), color=(255, 255, 255))
+        side_by_side.paste(orig, (0, 0))
+        side_by_side.paste(heat, (pil_image.size[0], 0))
+        side_by_side.paste(overlay, (pil_image.size[0] * 2, 0))
+        side_by_side.save(overlays_dir / "{}_compare.jpg".format(name), quality=95)
 
-    if hard_neg_overlays:
-        montage = build_montage(
-            [o for o, _, _ in hard_neg_overlays[:args.montage_max]],
-            [c for _, c, _ in hard_neg_overlays[:args.montage_max]],
+    if hard_neg_records:
+        build_montage(
+            [(o, he, ov, c) for o, he, ov, c, _ in hard_neg_records[:args.montage_max]],
             output_dir / "hard_negatives_montage.jpg",
         )
-        logging.info("Saved montage to %s", output_dir / "hard_negatives_montage.jpg")
+        logging.info("Saved 3-column montage to %s", output_dir / "hard_negatives_montage.jpg")
 
     summary = {
         "total_crops": len(rows),
