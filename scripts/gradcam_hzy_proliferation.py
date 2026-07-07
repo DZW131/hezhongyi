@@ -68,10 +68,11 @@ def parse_args():
     parser.add_argument("--sharpen", type=float, default=0.3,
                         help="Unsharp-mask strength applied after upsampling. 0 disables. "
                              "Typical 0.2-0.5 sharpens blurry layer4 maps.")
-    parser.add_argument("--bbox-threshold", type=float, default=0.4,
+    parser.add_argument("--bbox-threshold", type=float, default=0.70,
                         help="Heatmap threshold for bbox extraction. Lower = bigger box, "
-                             "higher = tighter box around peak activation. Range (0,1).")
-    parser.add_argument("--bbox-min-area", type=int, default=16,
+                             "higher = tighter box around peak activation. Range (0,1). "
+                             "0.70 captures red + orange-yellow cores while excluding green diffuse regions.")
+    parser.add_argument("--bbox-min-area", type=int, default=8,
                         help="Minimum connected-component area (pixels) to keep a bbox.")
     parser.add_argument("--max-boxes", type=int, default=5,
                         help="Max number of activation cores to draw per crop. "
