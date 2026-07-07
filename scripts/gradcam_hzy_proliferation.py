@@ -73,6 +73,9 @@ def parse_args():
                              "higher = tighter box around peak activation. Range (0,1).")
     parser.add_argument("--bbox-min-area", type=int, default=16,
                         help="Minimum connected-component area (pixels) to keep a bbox.")
+    parser.add_argument("--max-boxes", type=int, default=5,
+                        help="Max number of activation cores to draw per crop. "
+                             "Multi-focal heatmaps get one box per core, largest first.")
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -200,53 +203,63 @@ def _sharpen_cam(cam: np.ndarray, amount: float) -> np.ndarray:
     return sharpened
 
 
-def compute_cam_bbox(cam: np.ndarray, threshold: float = 0.4,
-                      min_area: int = 16) -> Optional[Tuple[int, int, int, int]]:
-    """Derive a localization bbox from the heatmap by thresholding + largest connected
-    component. Returns (x0, y0, x1, y1) in image-space pixel coords, or None if no
-    region exceeds the threshold/area. The bbox is drawn on top of the heatmap so the
-    doctor sees both the precise activation shape and a clean enclosing rectangle.
+def compute_cam_bboxes(cam: np.ndarray, threshold: float = 0.4,
+                       min_area: int = 16, max_boxes: int = 5) -> List[Tuple[int, int, int, int]]:
+    """Derive localization bboxes from the heatmap by thresholding + connected components.
+
+    Returns a list of (x0, y0, x1, y1) in image-space pixel coords, sorted by area
+    descending. Captures ALL distinct activation cores, not just the largest, so that
+    multi-focal heatmaps get one box per core. Empty list if nothing exceeds the
+    threshold/area. ``max_boxes`` caps the number to avoid clutter on diffuse maps.
     """
     if cam.size == 0 or cam.max() < threshold:
-        return None
+        return []
     try:
         from scipy.ndimage import label, find_objects
     except ImportError:
-        return None
+        return []
     binary = (cam >= threshold).astype(np.uint8)
     labeled, num = label(binary)
     if num == 0:
-        return None
-    # pick the largest connected component
+        return []
     sizes = np.bincount(labeled.ravel())
     sizes[0] = 0  # ignore background
-    largest = int(sizes.argmax())
-    if sizes[largest] < min_area:
-        return None
+    # collect (area, component_id) for components passing the min_area filter
+    candidates = [(int(sizes[i]), i) for i in range(1, num + 1) if sizes[i] >= min_area]
+    candidates.sort(reverse=True)  # largest first
+    boxes: List[Tuple[int, int, int, int]] = []
     slices = find_objects(labeled)
-    y_slice, x_slice = slices[largest - 1]
-    x0, x1 = int(x_slice.start), int(x_slice.stop)
-    y0, y1 = int(y_slice.start), int(y_slice.stop)
-    return x0, y0, x1, y1
+    for _area, cid in candidates[:max_boxes]:
+        y_slice, x_slice = slices[cid - 1]
+        boxes.append((int(x_slice.start), int(y_slice.start),
+                       int(x_slice.stop), int(y_slice.stop)))
+    return boxes
+
+
+def draw_bboxes_on_image(image: Image.Image, bboxes: List[Tuple[int, int, int, int]],
+                         color: Tuple[int, int, int] = (255, 60, 0),
+                         width: int = 3, label: Optional[str] = None) -> Image.Image:
+    """Draw multiple bbox rectangles on a copy of the image. If label is given, draw it
+    above the first (largest) box only, to avoid repeated clutter."""
+    out = image.copy()
+    if not bboxes:
+        return out
+    draw = ImageDraw.Draw(out)
+    for idx, (x0, y0, x1, y1) in enumerate(bboxes):
+        for w in range(width):
+            draw.rectangle([x0 - w, y0 - w, x1 + w, y1 + w], outline=color)
+        if idx == 0 and label:
+            tw, th = draw.textbbox((0, 0), label)[2:]
+            draw.rectangle([x0, max(0, y0 - th - 4), x0 + tw + 6, y0], fill=color)
+            draw.text((x0 + 3, max(0, y0 - th - 3)), label, fill=(255, 255, 255))
+    return out
 
 
 def draw_bbox_on_image(image: Image.Image, bbox: Optional[Tuple[int, int, int, int]],
                         color: Tuple[int, int, int] = (255, 60, 0),
                         width: int = 3, label: Optional[str] = None) -> Image.Image:
-    """Draw a bbox rectangle on a copy of the image. If label is given, draw it above the box."""
-    out = image.copy()
-    if bbox is None:
-        return out
-    draw = ImageDraw.Draw(out)
-    x0, y0, x1, y1 = bbox
-    for w in range(width):
-        draw.rectangle([x0 - w, y0 - w, x1 + w, y1 + w], outline=color)
-    if label:
-        # label background bar
-        tw, th = draw.textbbox((0, 0), label)[2:]
-        draw.rectangle([x0, max(0, y0 - th - 4), x0 + tw + 6, y0], fill=color)
-        draw.text((x0 + 3, max(0, y0 - th - 3)), label, fill=(255, 255, 255))
-    return out
+    """Backward-compat wrapper: draw a single bbox (or None) on a copy of the image."""
+    return draw_bboxes_on_image(image, [bbox] if bbox else [], color=color, width=width, label=label)
 
 
 def load_image(path: Path, device: torch.device) -> Tuple[torch.Tensor, Image.Image]:
@@ -383,12 +396,15 @@ def main():
             ys, xs = np.unravel_index(np.argmax(cam), cam.shape)
             cam_center = [int(xs), int(ys)]
 
-        cam_bbox = compute_cam_bbox(cam, threshold=args.bbox_threshold, min_area=args.bbox_min_area)
-        bbox_x0, bbox_y0, bbox_x1, bbox_y1 = (-1, -1, -1, -1)
-        bbox_w, bbox_h = 0, 0
-        if cam_bbox is not None:
-            bbox_x0, bbox_y0, bbox_x1, bbox_y1 = cam_bbox
-            bbox_w, bbox_h = bbox_x1 - bbox_x0, bbox_y1 - bbox_y0
+        cam_bboxes = compute_cam_bboxes(
+            cam, threshold=args.bbox_threshold, min_area=args.bbox_min_area, max_boxes=args.max_boxes
+        )
+        num_boxes = len(cam_bboxes)
+        primary = cam_bboxes[0] if cam_bboxes else (-1, -1, -1, -1)
+        bbox_x0, bbox_y0, bbox_x1, bbox_y1 = primary
+        bbox_w, bbox_h = bbox_x1 - bbox_x0, bbox_y1 - bbox_y0
+        # serialize all boxes as "x0,y0,x1,y1;x0,y0,x1,y1;..."
+        all_boxes_str = ";".join("{},{},{},{}".format(*b) for b in cam_bboxes) if cam_bboxes else ""
 
         rows.append({
             "name": path.name,
@@ -400,12 +416,14 @@ def main():
             "cam_max": round(float(cam.max()), 4),
             "cam_center_x": cam_center[0] if cam_center else "",
             "cam_center_y": cam_center[1] if cam_center else "",
+            "num_boxes": num_boxes,
             "bbox_x0": bbox_x0,
             "bbox_y0": bbox_y0,
             "bbox_x1": bbox_x1,
             "bbox_y1": bbox_y1,
             "bbox_w": bbox_w,
             "bbox_h": bbox_h,
+            "all_boxes": all_boxes_str,
         })
 
         if is_hard_neg:
@@ -413,13 +431,15 @@ def main():
             heatmap_only = Image.fromarray(
                 _apply_jet(cam.reshape(-1)).reshape(*cam.shape, 3)
             ).resize(pil_image.size, Image.BILINEAR)
-            # draw bbox on original and overlay (same coords), label with prob
-            box_label = "p={:.2f}".format(prob_pos)
-            orig_boxed = draw_bbox_on_image(pil_image, cam_bbox, color=(255, 60, 0), label=box_label)
-            overlay_boxed = draw_bbox_on_image(overlay, cam_bbox, color=(255, 60, 0), label=box_label)
+            # draw all bboxes on original and overlay; label with prob + box count
+            box_label = "p={:.2f} n={}".format(prob_pos, num_boxes)
+            orig_boxed = draw_bboxes_on_image(pil_image, cam_bboxes, color=(255, 60, 0), label=box_label)
+            overlay_boxed = draw_bboxes_on_image(overlay, cam_bboxes, color=(255, 60, 0), label=box_label)
             gt_str = "neg" if true_label == 0 else "pos"
             pred_str = "pos" if pred == 1 else "neg"
-            cap = "{} | GT={} pred={} p={:.2f}".format(path.stem, gt_str, pred_str, prob_pos)
+            cap = "{} | GT={} pred={} p={:.2f} boxes={}".format(
+                path.stem, gt_str, pred_str, prob_pos, num_boxes
+            )
             hard_neg_records.append((orig_boxed, heatmap_only, overlay_boxed, cap, prob_pos))
 
     cam_extractor.remove_hooks()
