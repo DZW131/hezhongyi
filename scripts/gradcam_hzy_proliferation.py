@@ -58,6 +58,16 @@ def parse_args():
                         help="Save overlays for all crops, not just hard negatives")
     parser.add_argument("--montage-max", type=int, default=24,
                         help="Max items in the summary montage")
+    parser.add_argument("--cam-method", default="layercam",
+                        choices=("gradcam", "gradcampp", "xgradcam", "layercam"),
+                        help="CAM variant. layercam is sharpest, gradcam is the classic coarse baseline.")
+    parser.add_argument("--target-layer", default="layer4",
+                        choices=("layer4", "layer3", "layer2"),
+                        help="ResNet block to hook. layer3/layer2 are higher-resolution (14x14/28x28) "
+                             "and give finer localization at the cost of less semantic abstraction.")
+    parser.add_argument("--sharpen", type=float, default=0.3,
+                        help="Unsharp-mask strength applied after upsampling. 0 disables. "
+                             "Typical 0.2-0.5 sharpens blurry layer4 maps.")
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -78,15 +88,27 @@ def load_model(checkpoint_path: Path, device: torch.device) -> torch.nn.Module:
 
 
 class GradCAM:
-    """Minimal Grad-CAM for a ResNet-style model.
+    """Grad-CAM family for a ResNet-style model, supporting sharper variants.
 
-    Registers forward and backward hooks on the target layer to capture activations
-    and gradients, then produces a coarse localization map for the target class.
+    Methods (selectable via ``--cam-method``):
+      - gradcam   : classic Grad-CAM, weights = mean of gradients. Coarse, may diffuse.
+      - gradcampp : Grad-CAM++, uses second-order gradients for sharper, better
+                    localization on multiple targets. Good default when gradcam is blurry.
+      - xgradcam  : XGrad-CAM, weights from element-wise grad*act products then
+                    normalized. More robust to noise, often sharper than gradcam.
+      - layercam  : LayerCAM, weights = ReLU(gradient) element-wise * activation,
+                    then sum. Produces the sharpest, most pixel-precise maps because it
+                    keeps per-location gradient sign instead of averaging.
+
+    For ResNet18 at 224 input, layer4 outputs 7x7. All methods upsample to the input
+    size with bicubic interpolation and optional gaussian sharpening to recover detail.
     """
 
-    def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module,
+                 method: str = "gradcam"):
         self.model = model
         self.target_layer = target_layer
+        self.method = method
         self.activations: Optional[torch.Tensor] = None
         self.gradients: Optional[torch.Tensor] = None
         self._fwd = target_layer.register_forward_hook(self._save_activation)
@@ -102,6 +124,31 @@ class GradCAM:
         self._fwd.remove()
         self._bwd.remove()
 
+    def _compute_weights(self) -> torch.Tensor:
+        """Compute per-channel weights according to the selected method."""
+        grads = self.gradients
+        acts = self.activations
+        if self.method == "gradcam":
+            return grads.mean(dim=(2, 3), keepdim=True)
+        if self.method == "gradcampp":
+            # Grad-CAM++: alpha_k approximated by softmax of normalized positive grads
+            grads_pow2 = grads.pow(2)
+            grads_pow3 = grads_pow2 * grads
+            denom = 2.0 * grads_pow2 + (acts * grads_pow3).sum(dim=(2, 3), keepdim=True)
+            denom = torch.where(denom != 0.0, denom, torch.ones_like(denom))
+            alpha = grads_pow2 / denom
+            alpha = F.relu(grads) * alpha
+            return alpha.sum(dim=(2, 3), keepdim=True) / max(1, alpha.shape[1])
+        if self.method == "xgradcam":
+            product = grads * acts
+            weights = product.sum(dim=(2, 3), keepdim=True)
+            denom = grads.sum(dim=(2, 3), keepdim=True).abs() + 1e-8
+            return weights / denom
+        if self.method == "layercam":
+            # weights are per-location: relu(grad) * act, summed over channels later
+            return F.relu(grads)
+        return grads.mean(dim=(2, 3), keepdim=True)
+
     def generate(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
         self.model.zero_grad()
         logits = self.model(input_tensor)
@@ -111,10 +158,16 @@ class GradCAM:
         if self.activations is None or self.gradients is None:
             return np.zeros((1, 1), dtype=np.float32)
 
-        weights = self.gradients.mean(dim=(2, 3), keepdim=True)
-        cam = (weights * self.activations).sum(dim=1, keepdim=True)
-        cam = F.relu(cam)
-        cam = F.interpolate(cam, size=input_tensor.shape[-2:], mode="bilinear", align_corners=False)
+        weights = self._compute_weights()
+        if self.method == "layercam":
+            # element-wise weighting, then channel sum
+            cam = (weights * self.activations).sum(dim=1, keepdim=True)
+            cam = F.relu(cam)
+        else:
+            cam = (weights * self.activations).sum(dim=1, keepdim=True)
+            cam = F.relu(cam)
+
+        cam = F.interpolate(cam, size=input_tensor.shape[-2:], mode="bicubic", align_corners=False)
         cam = cam.squeeze().cpu().numpy()
         cam_min, cam_max = cam.min(), cam.max()
         if cam_max - cam_min > 1e-8:
@@ -122,6 +175,24 @@ class GradCAM:
         else:
             cam = np.zeros_like(cam)
         return cam
+
+
+def _sharpen_cam(cam: np.ndarray, amount: float) -> np.ndarray:
+    """Apply unsharp masking to a normalized [0,1] heatmap to recover edge detail
+    lost during low-resolution upsampling. amount in [0,1] controls the strength."""
+    if amount <= 0:
+        return cam
+    try:
+        from scipy.ndimage import gaussian_filter
+    except ImportError:
+        return cam
+    blurred = gaussian_filter(cam.astype(np.float32), sigma=1.0)
+    sharpened = cam.astype(np.float32) + amount * (cam.astype(np.float32) - blurred)
+    sharpened = np.clip(sharpened, 0.0, 1.0)
+    s_min, s_max = sharpened.min(), sharpened.max()
+    if s_max - s_min > 1e-8:
+        sharpened = (sharpened - s_min) / (s_max - s_min)
+    return sharpened
 
 
 def load_image(path: Path, device: torch.device) -> Tuple[torch.Tensor, Image.Image]:
@@ -229,8 +300,11 @@ def main():
         raise RuntimeError("No images in {}".format(images_dir))
 
     model = load_model(Path(args.model), device)
-    target_layer = model.layer4[-1]
-    cam_extractor = GradCAM(model, target_layer)
+    layer_module = getattr(model, args.target_layer)
+    target_layer = layer_module[-1]
+    cam_extractor = GradCAM(model, target_layer, method=args.cam_method)
+    logging.info("CAM method=%s target_layer=%s sharpen=%.2f",
+                 args.cam_method, args.target_layer, args.sharpen)
 
     rows: List[dict] = []
     hard_neg_records: List[Tuple[Image.Image, Image.Image, Image.Image, str, float]] = []
@@ -241,6 +315,7 @@ def main():
         tensor, pil_image = load_image(path, device)
         with torch.enable_grad():
             cam = cam_extractor.generate(tensor, args.target_class)
+        cam = _sharpen_cam(cam, args.sharpen)
         with torch.no_grad():
             logits = model(tensor)
             probs = torch.softmax(logits, dim=1)[0].cpu().tolist()
