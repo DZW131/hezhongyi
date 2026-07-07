@@ -68,6 +68,11 @@ def parse_args():
     parser.add_argument("--sharpen", type=float, default=0.3,
                         help="Unsharp-mask strength applied after upsampling. 0 disables. "
                              "Typical 0.2-0.5 sharpens blurry layer4 maps.")
+    parser.add_argument("--bbox-threshold", type=float, default=0.4,
+                        help="Heatmap threshold for bbox extraction. Lower = bigger box, "
+                             "higher = tighter box around peak activation. Range (0,1).")
+    parser.add_argument("--bbox-min-area", type=int, default=16,
+                        help="Minimum connected-component area (pixels) to keep a bbox.")
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
 
@@ -193,6 +198,55 @@ def _sharpen_cam(cam: np.ndarray, amount: float) -> np.ndarray:
     if s_max - s_min > 1e-8:
         sharpened = (sharpened - s_min) / (s_max - s_min)
     return sharpened
+
+
+def compute_cam_bbox(cam: np.ndarray, threshold: float = 0.4,
+                      min_area: int = 16) -> Optional[Tuple[int, int, int, int]]:
+    """Derive a localization bbox from the heatmap by thresholding + largest connected
+    component. Returns (x0, y0, x1, y1) in image-space pixel coords, or None if no
+    region exceeds the threshold/area. The bbox is drawn on top of the heatmap so the
+    doctor sees both the precise activation shape and a clean enclosing rectangle.
+    """
+    if cam.size == 0 or cam.max() < threshold:
+        return None
+    try:
+        from scipy.ndimage import label, find_objects
+    except ImportError:
+        return None
+    binary = (cam >= threshold).astype(np.uint8)
+    labeled, num = label(binary)
+    if num == 0:
+        return None
+    # pick the largest connected component
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0  # ignore background
+    largest = int(sizes.argmax())
+    if sizes[largest] < min_area:
+        return None
+    slices = find_objects(labeled)
+    y_slice, x_slice = slices[largest - 1]
+    x0, x1 = int(x_slice.start), int(x_slice.stop)
+    y0, y1 = int(y_slice.start), int(y_slice.stop)
+    return x0, y0, x1, y1
+
+
+def draw_bbox_on_image(image: Image.Image, bbox: Optional[Tuple[int, int, int, int]],
+                        color: Tuple[int, int, int] = (255, 60, 0),
+                        width: int = 3, label: Optional[str] = None) -> Image.Image:
+    """Draw a bbox rectangle on a copy of the image. If label is given, draw it above the box."""
+    out = image.copy()
+    if bbox is None:
+        return out
+    draw = ImageDraw.Draw(out)
+    x0, y0, x1, y1 = bbox
+    for w in range(width):
+        draw.rectangle([x0 - w, y0 - w, x1 + w, y1 + w], outline=color)
+    if label:
+        # label background bar
+        tw, th = draw.textbbox((0, 0), label)[2:]
+        draw.rectangle([x0, max(0, y0 - th - 4), x0 + tw + 6, y0], fill=color)
+        draw.text((x0 + 3, max(0, y0 - th - 3)), label, fill=(255, 255, 255))
+    return out
 
 
 def load_image(path: Path, device: torch.device) -> Tuple[torch.Tensor, Image.Image]:
@@ -329,6 +383,13 @@ def main():
             ys, xs = np.unravel_index(np.argmax(cam), cam.shape)
             cam_center = [int(xs), int(ys)]
 
+        cam_bbox = compute_cam_bbox(cam, threshold=args.bbox_threshold, min_area=args.bbox_min_area)
+        bbox_x0, bbox_y0, bbox_x1, bbox_y1 = (-1, -1, -1, -1)
+        bbox_w, bbox_h = 0, 0
+        if cam_bbox is not None:
+            bbox_x0, bbox_y0, bbox_x1, bbox_y1 = cam_bbox
+            bbox_w, bbox_h = bbox_x1 - bbox_x0, bbox_y1 - bbox_y0
+
         rows.append({
             "name": path.name,
             "true_label": true_label,
@@ -339,6 +400,12 @@ def main():
             "cam_max": round(float(cam.max()), 4),
             "cam_center_x": cam_center[0] if cam_center else "",
             "cam_center_y": cam_center[1] if cam_center else "",
+            "bbox_x0": bbox_x0,
+            "bbox_y0": bbox_y0,
+            "bbox_x1": bbox_x1,
+            "bbox_y1": bbox_y1,
+            "bbox_w": bbox_w,
+            "bbox_h": bbox_h,
         })
 
         if is_hard_neg:
@@ -346,10 +413,14 @@ def main():
             heatmap_only = Image.fromarray(
                 _apply_jet(cam.reshape(-1)).reshape(*cam.shape, 3)
             ).resize(pil_image.size, Image.BILINEAR)
+            # draw bbox on original and overlay (same coords), label with prob
+            box_label = "p={:.2f}".format(prob_pos)
+            orig_boxed = draw_bbox_on_image(pil_image, cam_bbox, color=(255, 60, 0), label=box_label)
+            overlay_boxed = draw_bbox_on_image(overlay, cam_bbox, color=(255, 60, 0), label=box_label)
             gt_str = "neg" if true_label == 0 else "pos"
             pred_str = "pos" if pred == 1 else "neg"
             cap = "{} | GT={} pred={} p={:.2f}".format(path.stem, gt_str, pred_str, prob_pos)
-            hard_neg_records.append((pil_image, heatmap_only, overlay, cap, prob_pos))
+            hard_neg_records.append((orig_boxed, heatmap_only, overlay_boxed, cap, prob_pos))
 
     cam_extractor.remove_hooks()
 
@@ -369,13 +440,13 @@ def main():
 
     overlays_dir = output_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
-    for orig, heat, overlay, cap, prob in hard_neg_records[:args.top_k]:
+    for orig_boxed, heat, overlay_boxed, cap, prob in hard_neg_records[:args.top_k]:
         name = cap.split(" ")[0]
-        # save side-by-side: original | heatmap | overlay
+        # save side-by-side: original+box | heatmap | overlay+box
         side_by_side = Image.new("RGB", (pil_image.size[0] * 3, pil_image.size[1]), color=(255, 255, 255))
-        side_by_side.paste(orig, (0, 0))
+        side_by_side.paste(orig_boxed, (0, 0))
         side_by_side.paste(heat, (pil_image.size[0], 0))
-        side_by_side.paste(overlay, (pil_image.size[0] * 2, 0))
+        side_by_side.paste(overlay_boxed, (pil_image.size[0] * 2, 0))
         side_by_side.save(overlays_dir / "{}_compare.jpg".format(name), quality=95)
 
     if hard_neg_records:
