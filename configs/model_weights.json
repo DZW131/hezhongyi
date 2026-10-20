@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-20",
+  "source": "SSH server; GitHub binary upload incomplete",
+  "weights": [
+    {
+      "filename": "hzy_hubmap_finetuned_glomerulus_unet_best.pth",
+      "bytes": 124233752,
+      "sha256": "b467e05be918ede05bf2124ad5c30ce624487b567b1d52190925eab9529f3dee",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_finetune_glom_scene_ds025_resume/best.pth"
+    },
+    {
+      "filename": "efficientnetv2-m_M_V3.pth",
+      "bytes": 213154581,
+      "sha256": "10b7b37cc17ff35b336110c47f5eb5c0f4aa86f6b30b41b5702c7720ee79d188",
+      "server_path": "/home/duyanhong/Workspace/MESCnn/mescnn_data/classification/logs/cnn/holdout/efficientnetv2-m_M_V3.pth"
+    },
+    {
+      "filename": "efficientnetv2-m_E_V3.pth",
+      "bytes": 213149461,
+      "sha256": "70b948be6ff65c2f0f4b41e5f545f35a30c638ee15f47bb98d18d721539a62bf",
+      "server_path": "/home/duyanhong/Workspace/MESCnn/mescnn_data/classification/logs/cnn/holdout/efficientnetv2-m_E_V3.pth"
+    },
+    {
+      "filename": "densenet161_S_V3.pth",
+      "bytes": 107197956,
+      "sha256": "1b468e0351ecb6c8ad27ccece1e0adacda347539cc87e25acf8eb69d2e4295b1",
+      "server_path": "/home/duyanhong/Workspace/MESCnn/mescnn_data/classification/logs/cnn/holdout/densenet161_S_V3.pth"
+    },
+    {
+      "filename": "mobilenetv2_C_V3.pth",
+      "bytes": 9178857,
+      "sha256": "d1bd6ce2c63985f488c3a55b8e0914d7737440b168d504dafc4029bffc4d099e",
+      "server_path": "/home/duyanhong/Workspace/MESCnn/mescnn_data/classification/logs/cnn/holdout/mobilenetv2_C_V3.pth"
+    },
+    {
+      "filename": "mesangial_finetuned_best.pth",
+      "bytes": 212952709,
+      "sha256": "853769ac5416e559aaa9c65d403fe2c68bba155dac85b63f4958115c7ae94f80",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_mescnn_mesangial_binary_initM_384_focal_tta_20260822/best.pth"
+    },
+    {
+      "filename": "endocapillary_finetuned_best.pth",
+      "bytes": 212958405,
+      "sha256": "4c190f7e2730a4e26edfa9a5afe888d9d212944aedd14694d9a9c9e0702c34ad",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_mescnn_proliferation_multilabel_initE_384_focal_sampler_noposw_20260822/best.pth"
+    },
+    {
+      "filename": "crescent_detector_best.pth",
+      "bytes": 76009249,
+      "sha256": "0baa1e3f6477a5309ea83963b0a257bb2620c0498ea414ed6cbb29a0bf7b04d5",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_detection_boxes/crescent_binary_fasterrcnn_coco_aug_presence_balanced_20260619/best.pth"
+    },
+    {
+      "filename": "crescent_subtype_resnet18_best.pth",
+      "bytes": 44786123,
+      "sha256": "748f473c00f5684156ddc4392104b6fee52655a8e416a8ebfe6c66381f975869",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/hzy_hspn_crescent_subtype_classifier_resnet18_20260619/best.pth"
+    },
+    {
+      "filename": "tubular_atrophy_v3_best.pth",
+      "bytes": 124234143,
+      "sha256": "70bd135e0a4da99976f0ab421fd9a15a65fbe16d019f0af78073618e26dcb3ed",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/tubular_atrophy_52_20260923/unet256_v3_recall_tversky/best.pth"
+    },
+    {
+      "filename": "intrinsic_cells_dpa_80e_inference.pth",
+      "bytes": 402159163,
+      "sha256": "d9223bd231877fbecc601186941bb3982987208c853899c708a2ea2b916ebf2f",
+      "server_path": "/home/duyanhong/Dataspace/HZY/checkpoints/intrinsic_cells_dpa_80e_inference.pth"
+    }
+  ]
+}

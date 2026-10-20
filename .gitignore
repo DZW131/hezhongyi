@@ -38,6 +38,7 @@ dist/
 /logs/
 /predictions/
 /outputs/
+/model_weights/
 /reports/
 /docs/*
 !/docs/LEGACY_WORKLOG.md

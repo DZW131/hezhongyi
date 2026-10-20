@@ -1,9 +1,8 @@
 # 模型权重与运行前检查
 
-更新日期：2026-10-20。权重放在同仓库 Release，代码分支为 `mescnn-transfer`。
+更新日期：2026-10-20。代码分支为 `mescnn-transfer`。GitHub二进制上传遇到代理中断，当前没有可用的完整Release权重包；采用SSH直接下载服务器上已校验的权重。
 
-发布地址：<https://github.com/DZW131/hezhongyi/releases/tag/hspn-local-weights-20261020>。
-下载后的文件放入仓库根目录 `checkpoints/`。各文件的 SHA-256、大小和来源见 `weights_manifest.json`。
+下载后的文件放入仓库根目录 `checkpoints/`。11个文件的SHA-256、大小和服务器来源见仓库内 `configs/model_weights.json`。需要能够访问服务器并具有SSH账号或密钥；脚本不会保存密码。
 
 | 权重 | 本地核对状态 | 用途 |
 | --- | --- | --- |
@@ -25,12 +24,13 @@
 脚本中保留的服务器默认路径仅是历史位置；新机器运行时请显式传入全部权重路径。
 
 ```bash
-# 安装GitHub CLI后，可下载整个权重包；私有仓库先 gh auth login
-gh release download hspn-local-weights-20261020 --repo DZW131/hezhongyi --dir checkpoints
+python scripts/download_project_weights.py --host 10.15.20.178 --user duyanhong
+# 仅获取肾小球模型，也可使用 --key 指定私钥
+python scripts/download_project_weights.py --only hzy_hubmap_finetuned_glomerulus_unet_best.pth
 ```
 
 每个模型应同时保存训练参数、标签顺序、输入尺寸、归一化、阈值和验证记录。
-服务器已恢复连接，本次核对了正式权重来源与关键代码SHA-256，没有重新训练或重新评估模型。最终统一校验清单为 `weights_manifest.json`，包括11个权重的大小和SHA-256。服务器正式模型下载后均完成源文件SHA-256比对。
+服务器已恢复连接，本次核对了正式权重来源与关键代码SHA-256，没有重新训练或重新评估模型。最终统一校验清单为 `configs/model_weights.json`。六个正式模型下载后均完成服务器源文件SHA-256比对；下载脚本还会对师弟获取的所有文件再次校验。
 
 服务器历史权重根目录为 `/home/duyanhong/Dataspace/HZY/checkpoints/`；细胞80轮原始checkpoint位于 `/home/duyanhong/Workspace/dpa-p2pnet/checkpoint/hzy_intrinsic_dpa_80e/best.pth`。推理版仅剔除训练优化器状态，模型参数未转换精度。
 

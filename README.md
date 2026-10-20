@@ -54,7 +54,7 @@ data/                     # 不进入Git，内部获取
   lesions/proliferation/manifests/crops.csv
   lesions/proliferation/train/images/
   lesions/proliferation/val/images/
-checkpoints/              # 权重从Release或内部获取
+checkpoints/              # 用download_project_weights.py从服务器获取
 outputs/                  # 本机结果
 scripts/                  # 数据、训练、推理、评分
 unet/ utils/              # U-Net及共享组件
@@ -67,6 +67,12 @@ crop manifest至少包含 `slide_id,crop_id,split,image_path`。训练增生模�
 同一患者/切片的全部scene/crop保持同组。部分历史准备脚本默认按scene随机划分，新实验应传入经患者级核对的 `--split-csv`。测试集不能参与选模与调阈值。
 
 ## 4. 先跑评分器和测试
+
+完整权重可从已恢复连接的服务器下载并自动核对SHA-256。GitHub大文件上传受网络中断影响，当前请使用以下方式：
+
+```bash
+python scripts/download_project_weights.py --host 10.15.20.178 --user duyanhong
+```
 
 ```bash
 python scripts/score_hspn_pathology.py --write-template outputs/score_input_template.csv
