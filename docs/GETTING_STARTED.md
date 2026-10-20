@@ -41,7 +41,7 @@ python scripts/evaluate_hzy_tubular_atrophy.py --dataset-root data/tubular_atrop
 python scripts/infer_hzy_tubular_atrophy_scenes.py --scenes-dir data/export/images --checkpoint checkpoints/tubular_atrophy/best.pth --output-dir outputs/atrophy --threshold 0.2
 ```
 
-评估/场景推理阈值需要按冻结配置设置。场景脚本输出预测萎缩面积/组织面积，亮度阈值排除背景，此量作为T代理输入，不等于完整IFTA。
+评估/场景推理阈值需要按冻结配置设置。95例流程实际采用 `tubular_atrophy_v3_best.pth` 和场景阈值0.15，替换上方示例参数后再运行。场景脚本输出预测萎缩面积/组织面积，亮度阈值排除背景，此量作为T代理输入，不等于完整IFTA。
 
 ## 联合推理、评分与对照
 
@@ -50,12 +50,12 @@ python scripts/run_hspn_full_report_inference.py \
   --data-root data/lesions/proliferation \
   --manifest data/lesions/proliferation/manifests/crops.csv \
   --split val --output-dir outputs/full_report \
-  --m-checkpoint checkpoints/m_finetuned/best.pth \
-  --e-checkpoint checkpoints/e_finetuned/best.pth \
+  --m-checkpoint checkpoints/mesangial_finetuned_best.pth \
+  --e-checkpoint checkpoints/endocapillary_finetuned_best.pth \
   --m-init-model checkpoints/efficientnetv2-m_M_V3.pth \
   --e-init-model checkpoints/efficientnetv2-m_E_V3.pth \
-  --detection-checkpoint checkpoints/crescent_detector/best.pth \
-  --subtype-checkpoint checkpoints/crescent_subtype/best.pth \
+  --detection-checkpoint checkpoints/crescent_detector_best.pth \
+  --subtype-checkpoint checkpoints/crescent_subtype_resnet18_best.pth \
   --mesangial-threshold 0.35 --endocapillary-threshold 0.20 \
   --crescent-threshold 0.30 --device cuda
 ```
@@ -94,7 +94,7 @@ cd ../..
 
 ```bash
 # 可视化脚本读取test_*；独立测试时单独建立目录放入heldout内容及相同mean_std.npy
-python scripts/visualize_hzy_intrinsic_cell_dpa.py --source-root vendor/ihc-main --dataset data/cells_heldout_eval --checkpoint checkpoints/cells/best.pth --output-dir outputs/cells --match-distance 10
+python scripts/visualize_hzy_intrinsic_cell_dpa.py --source-root vendor/ihc-main --dataset data/cells_heldout_eval --checkpoint checkpoints/intrinsic_cells_dpa_80e_inference.pth --output-dir outputs/cells --match-distance 10
 ```
 
 类别顺序为内皮、系膜、足细胞。这里评估的是点检测与分类，不是细胞轮廓分割。

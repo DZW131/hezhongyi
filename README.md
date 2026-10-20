@@ -106,7 +106,7 @@ python scripts/train_hzy_weakseg_hfrm.py --task crescent --data-root data/lesion
 | 固有细胞，80轮最优独立测试 | 点检测F1 0.608，三类宏F1 0.379 |
 | 95例ISKDC对照 | 准确率0.6316，宏F1 0.3939 |
 
-模块验证、独立测试和病例级对照的口径不同，数据划分与来源见 [RESULTS.md](docs/RESULTS.md)。本次本地评分、汇总、训练扩展与弱监督组件27项测试通过。服务器不可连接，未重跑GPU训练或95例推理。
+模块验证、独立测试和病例级对照的口径不同，数据划分与来源见 [RESULTS.md](docs/RESULTS.md)。本次本地评分、汇总、训练扩展与弱监督组件27项测试通过。服务器恢复连接后核对并下载了正式模型权重，未重跑GPU训练或95例推理。
 
 ## 7. 接手顺序
 

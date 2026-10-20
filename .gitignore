@@ -37,6 +37,7 @@ dist/
 /deliverables/
 /logs/
 /predictions/
+/outputs/
 /reports/
 /docs/*
 !/docs/LEGACY_WORKLOG.md
