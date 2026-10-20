@@ -79,7 +79,12 @@ OTHER_LESION_LABELS: List[LesionLabel] = [
     LesionLabel("纤维素性血栓", "fibrin_thrombus", 1),
 ]
 
+TUBULAR_ATROPHY_LABELS: List[LesionLabel] = [
+    LesionLabel("肾小管萎缩", "tubular_atrophy", 2068),
+]
+
 LESION_TASKS: List[LesionTask] = [
+    LesionTask("肾小管萎缩", "tubular_atrophy", TUBULAR_ATROPHY_LABELS),
     LesionTask("proliferation binary", "proliferation_binary", PROLIFERATION_BINARY_LABELS, class_names={1: "proliferation"}),
     LesionTask("细胞增生类病变", "proliferation", PROLIFERATION_LABELS),
     LesionTask("新月体类病变", "crescent", CRESCENT_LABELS),
@@ -95,7 +100,7 @@ def tasks_by_slug() -> Dict[str, LesionTask]:
 def resolve_lesion_tasks(requested_tasks: Iterable[str]) -> List[LesionTask]:
     requested = list(requested_tasks)
     if not requested:
-        return list(LESION_TASKS)
+        return [task for task in LESION_TASKS if task.slug != "tubular_atrophy"]
 
     by_slug = tasks_by_slug()
     by_name = {task.name: task for task in LESION_TASKS}

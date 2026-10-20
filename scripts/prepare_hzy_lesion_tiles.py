@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import logging
 import shutil
@@ -24,7 +25,6 @@ from prepare_hubmap_tiles import (
     point_to_tuple,
     polygon_rings_from_geometry,
     read_geojson_features,
-    read_split_table,
     select_tiles,
     write_csv,
 )
@@ -271,9 +271,31 @@ def write_mask_value_cache(mask_dir: Path, num_ids: int, num_classes: int):
 
 
 def ensure_split_dirs(output_dir: Path):
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         (output_dir / split / "images").mkdir(parents=True, exist_ok=True)
         (output_dir / split / "masks").mkdir(parents=True, exist_ok=True)
+
+
+def read_scene_splits(split_csv: Path, slide_ids: Sequence[str]) -> Dict[str, str]:
+    with split_csv.open("r", newline="", encoding="utf-8-sig") as handle:
+        rows = csv.DictReader(handle)
+        parent_splits = {
+            (row.get("slide_id") or row.get("id") or "").strip(): (row.get("split") or "").strip().lower()
+            for row in rows
+        }
+
+    invalid = {slide_id: split for slide_id, split in parent_splits.items() if split not in {"train", "val", "test"}}
+    if invalid:
+        raise ValueError("Invalid split assignments: {}".format(invalid))
+
+    scene_splits = {}
+    for slide_id in slide_ids:
+        parent_id = slide_id.rsplit("_s", 1)[0] if slide_id.rsplit("_s", 1)[-1].isdigit() else slide_id
+        split = parent_splits.get(slide_id, parent_splits.get(parent_id))
+        if split is None:
+            raise ValueError("No split assignment for scene {} (parent {})".format(slide_id, parent_id))
+        scene_splits[slide_id] = split
+    return scene_splits
 
 
 def prepare_one_task(args, task: LesionTask, slide_ids: Sequence[str], split_map: Dict[str, str]):
@@ -348,10 +370,13 @@ def prepare_one_task(args, task: LesionTask, slide_ids: Sequence[str], split_map
     write_csv(tile_rows, manifests_dir / "tiles.csv")
     write_csv(slide_rows, manifests_dir / "slides.csv")
 
-    train_count = sum(1 for row in tile_rows if row.get("split") == "train")
-    val_count = sum(1 for row in tile_rows if row.get("split") == "val")
-    write_mask_value_cache(output_dir / "train" / "masks", train_count, task.num_classes)
-    write_mask_value_cache(output_dir / "val" / "masks", val_count, task.num_classes)
+    split_counts = {
+        split: sum(1 for row in tile_rows if row.get("split") == split)
+        for split in ("train", "val", "test")
+    }
+    train_count, val_count = split_counts["train"], split_counts["val"]
+    for split, count in split_counts.items():
+        write_mask_value_cache(output_dir / split / "masks", count, task.num_classes)
     if train_count == 0 or val_count == 0:
         logging.warning(
             "Task %s produced train=%s and val=%s tiles. Training requires non-empty train and val splits.",
@@ -372,6 +397,7 @@ def prepare_one_task(args, task: LesionTask, slide_ids: Sequence[str], split_map
         "slides": len(slide_ids),
         "train_tiles": train_count,
         "val_tiles": val_count,
+        "test_tiles": split_counts["test"],
         "positive_tiles": sum(int(row.get("is_positive", 0)) for row in tile_rows),
         "negative_tiles": sum(1 for row in tile_rows if not row.get("is_positive")),
         "tile_size": args.tile_size,
@@ -396,8 +422,8 @@ def main():
     validate_args(args)
     images_dir = Path(args.images_dir)
     split_csv = Path(args.split_csv) if args.split_csv else None
-    split_map = read_split_table(split_csv)
     slide_ids = discover_slide_ids(images_dir, args.limit_slides)
+    split_map = read_scene_splits(split_csv, slide_ids) if split_csv else {}
     tasks = resolve_lesion_tasks(args.tasks)
 
     index_rows = []
