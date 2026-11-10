@@ -46,6 +46,9 @@ dist/
 !/docs/MODEL_WEIGHTS.md
 !/docs/RESULTS.md
 !/docs/THIRD_PARTY.md
+!/docs/CELL_UPGRADE_20261021.md
+!/docs/CELL_REFINEMENT_20261028.md
+!/docs/MEETING_BRIEF_20261105.md
 /vendor/ihc-main/docs/
 /vendor/ihc-main/readme.md
 /vendor/ihc-main/extract_he.py

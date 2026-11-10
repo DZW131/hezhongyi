@@ -1,0 +1,59 @@
+{
+  "method": "frozen_dpa_proposals_plus_local_context_resnet18",
+  "date": "2026-10-28",
+  "classes": ["endothelial_cell", "mesangial_cell", "podocyte", "background"],
+  "dpa_checkpoint": {
+    "local": "checkpoints/release_20261020/intrinsic_cells_upgrade_43_20261021_best.pth",
+    "server": "/home/duyanhong/Dataspace/HZY/runs/intrinsic_upgrade_43_20261021/recall_mesangial/best.pth",
+    "sha256": "c49df0a97c4331cb80213b29ad37feab29a2362aa1183acf2a070bf6af6b63a3"
+  },
+  "classifier_checkpoint": {
+    "local": "checkpoints/intrinsic_refinement_20261028/best.pth",
+    "server": "/home/duyanhong/Dataspace/HZY/runs/intrinsic_refinement_20261028/best.pth",
+    "sha256": "17cbd9c1ae974b8c9b4eb67736cf8c75076672eab28ba03f8c86e1418344a56b"
+  },
+  "classifier": {
+    "backbone": "resnet18",
+    "initialization": "ImageNet resnet18-f37072fd.pth",
+    "view_sizes": [64, 192],
+    "resized_view_size": 64,
+    "input_channels": 6,
+    "rgb_mean_each_view": [0.485, 0.456, 0.406],
+    "rgb_std_each_view": [0.229, 0.224, 0.225],
+    "metadata": ["dpa_probability_0", "dpa_probability_1", "dpa_probability_2", "dpa_background_probability", "roi_relative_x", "roi_relative_y", "roi_relative_radius"],
+    "head_dimensions": [519, 128, 4]
+  },
+  "data": {
+    "directory": "data/hzy_intrinsic_cell_upgrade_43_20261021",
+    "image_size": 1024,
+    "train_cases_crops": [29, 377],
+    "val_cases_crops": [7, 95],
+    "test_cases_crops": [7, 75],
+    "split_sha256": "16cae49a091fad243a396084c7f253b1ebbbb36ba3369c23c89fa4fc80cf6f77",
+    "dpa_normalization": "dataset mean_std.npy; retained from upgraded DPA",
+    "roi_policy": "Annotated ROI used for proposals, normalized positions, supervision and evaluation",
+    "evaluation_interpretation": "Previously inspected retrospective holdout; not a blind external test"
+  },
+  "training": {
+    "seed": 20261028,
+    "epochs_completed": 10,
+    "selected_epoch_zero_based": 9,
+    "batch_size": 192,
+    "encoder_learning_rate": 0.00001,
+    "head_learning_rate": 0.0003,
+    "weight_decay": 0.001,
+    "label_smoothing": 0.03,
+    "derived_patch_class_counts": [16370, 17902, 14208, 13727]
+  },
+  "inference": {
+    "proposal_foreground_background_ratio": 0.4,
+    "proposal_dedup_distance": 4.0,
+    "classifier_probability_weight": 0.75,
+    "dpa_probability_weight": 0.25,
+    "final_foreground_background_ratio": 1.4,
+    "final_dedup_distance": 10.0,
+    "evaluation_match_distance_strictly_less_than": 10.0,
+    "calibration_split": "val",
+    "test_used_for_selection": false
+  }
+}
