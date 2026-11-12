@@ -1,0 +1,13 @@
+upstream/
+compat_cpu/
+.venv/
+data/
+outputs/
+figures/
+logs/
+weights/
+wheels/
+*.pth
+*.bundle
+*.tar.gz
+__pycache__/

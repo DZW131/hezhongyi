@@ -1,0 +1,107 @@
+[
+  {
+    "channel": 0,
+    "task_id": 0,
+    "candidate_name": "adhesion",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 1,
+    "task_id": 1,
+    "candidate_name": "capsular drop",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 2,
+    "task_id": 2,
+    "candidate_name": "global sclerosis",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 3,
+    "task_id": 3,
+    "candidate_name": "hyaline cap",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 4,
+    "task_id": 4,
+    "candidate_name": "hyalinosis",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 5,
+    "task_id": 5,
+    "candidate_name": "mesangial lysis",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 6,
+    "task_id": 6,
+    "candidate_name": "mesangial expansion",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 7,
+    "task_id": 7,
+    "candidate_name": "microaneurysm",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 8,
+    "task_id": 8,
+    "candidate_name": "nodular sclerosis",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 9,
+    "task_id": 9,
+    "candidate_name": "segmental sclerosis",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 10,
+    "task_id": 10,
+    "candidate_name": "Bowman capsule",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 11,
+    "task_id": 11,
+    "candidate_name": "mesangium",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 12,
+    "task_id": 12,
+    "candidate_name": "glomerular tuft",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 13,
+    "task_id": 13,
+    "candidate_name": "podocyte",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  },
+  {
+    "channel": 14,
+    "task_id": 14,
+    "candidate_name": "mesangial cell",
+    "semantic_status": "community_provisional",
+    "formal_evaluation_allowed": false
+  }
+]

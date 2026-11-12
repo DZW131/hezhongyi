@@ -1,0 +1,83 @@
+{
+  "official_demo_count": 2,
+  "local_count": 30,
+  "local_cases": 7,
+  "repeat_identical": true,
+  "pixel_metrics": "N/A; no confirmed matching pixel labels",
+  "experiment_date": "2026-11-11",
+  "sync_date": "2026-11-12",
+  "runs": [
+    {
+      "name": "demo",
+      "returncode": 0,
+      "image_count": 2,
+      "wall_seconds": 17.660363150993362,
+      "device": "cpu",
+      "threads": 4,
+      "shapes": [
+        [
+          512,
+          512,
+          15
+        ]
+      ],
+      "dtypes": [
+        "bool"
+      ]
+    },
+    {
+      "name": "demo_repeat",
+      "returncode": 0,
+      "image_count": 2,
+      "wall_seconds": 18.358581064036116,
+      "device": "cpu",
+      "threads": 4,
+      "shapes": [
+        [
+          512,
+          512,
+          15
+        ]
+      ],
+      "dtypes": [
+        "bool"
+      ]
+    },
+    {
+      "name": "background",
+      "returncode": 0,
+      "image_count": 1,
+      "wall_seconds": 10.590702726040035,
+      "device": "cpu",
+      "threads": 4,
+      "shapes": [
+        [
+          512,
+          512,
+          15
+        ]
+      ],
+      "dtypes": [
+        "bool"
+      ]
+    },
+    {
+      "name": "local_zero_shot",
+      "returncode": 0,
+      "image_count": 30,
+      "wall_seconds": 917.863325812039,
+      "device": "cpu",
+      "threads": 4,
+      "shapes": [
+        [
+          1024,
+          1024,
+          15
+        ]
+      ],
+      "dtypes": [
+        "bool"
+      ]
+    }
+  ]
+}

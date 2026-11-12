@@ -1,0 +1,517 @@
+--- upstream/Glo_v2_segmentation.py
++++ compat_cpu/Glo_v2_segmentation.py
+@@ -1,4 +1,5 @@
+ import subprocess
++import sys
+ import argparse
+ import os
+ # Define the commands with their arguments
+@@ -29,7 +30,7 @@
+ 
+ 
+     save_csv= [
+-        "python", "MOTSDataset_2D_Patch_normal_save_csv_Glo_v2.py",
++        sys.executable, "MOTSDataset_2D_Patch_normal_save_csv_Glo_v2.py",
+         "--dataset_dir",
+         args.dataset_dir,
+         "--data_list",
+@@ -38,7 +39,7 @@
+     ]
+ 
+     testing = [
+-        "python", "testing_2D_patch_v2.py",
++        sys.executable, "testing_2D_patch_v2.py",
+         "--valset_dir",
+         os.path.join(args.dataset_dir, "data_list.csv"),
+         "--reload_path",
+@@ -48,5 +49,5 @@
+     ]
+ 
+     # Run each command in sequence
+-    subprocess.run(save_csv)
+-    subprocess.run(testing)+    subprocess.run(save_csv, check=True)
++    subprocess.run(testing, check=True)--- upstream/MOTSDataset_2D_Patch_normal_save_csv_Glo_v2.py
++++ compat_cpu/MOTSDataset_2D_Patch_normal_save_csv_Glo_v2.py
+@@ -12,12 +12,12 @@
+ import argparse
+ 
+ import matplotlib
+-matplotlib.use('TkAgg')
++matplotlib.use('Agg')
+ 
+ import matplotlib.pyplot as plt
+-import nibabel as nib
++# unused nibabel import removed for patch inference
+ from skimage.transform import resize
+-import SimpleITK as sitk
++# unused SimpleITK import removed for patch inference
+ import math
+ # from batchgenerators.transforms import Compose
+ # from batchgenerators.transforms.spatial_transforms import SpatialTransform, MirrorTransform
+--- upstream/MOTSDataset_2D_Patch_supervise_normal_csv_Glo_v2.py
++++ compat_cpu/MOTSDataset_2D_Patch_supervise_normal_csv_Glo_v2.py
+@@ -8,9 +8,9 @@
+ import cv2
+ from torch.utils import data
+ import matplotlib.pyplot as plt
+-import nibabel as nib
++# unused nibabel import removed for patch inference
+ from skimage.transform import resize
+-import SimpleITK as sitk
++# unused SimpleITK import removed for patch inference
+ import math
+ # from batchgenerators.transforms import Compose
+ # from batchgenerators.transforms.spatial_transforms import SpatialTransform, MirrorTransform
+--- upstream/engine.py
++++ compat_cpu/engine.py
+@@ -10,11 +10,7 @@
+ from utils_engine.logger import get_logger
+ from utils_engine.pyt_utils import all_reduce_tensor, extant_file
+ 
+-try:
+-    from apex.parallel import DistributedDataParallel, SyncBatchNorm
+-except ImportError:
+-    raise ImportError(
+-        "Please install apex from https://www.github.com/nvidia/apex .")
++# Apex is unused in single-process CPU inference.
+ 
+ 
+ logger = get_logger()
+--- upstream/testing_2D_patch_v2.py
++++ compat_cpu/testing_2D_patch_v2.py
+@@ -6,6 +6,7 @@
+ 
+ import glob
+ import torch
++torch.set_num_threads(4)
+ import torch.nn as nn
+ from torch.utils import data
+ import numpy as np
+@@ -41,8 +42,8 @@
+ from math import ceil
+ 
+ from engine import Engine
+-from apex import amp
+-from apex.parallel import convert_syncbn_model
++# Apex not required for FP32 single-process inference
++
+ #from focalloss import FocalLoss2dff
+ from sklearn.metrics import f1_score, confusion_matrix
+ 
+@@ -56,7 +57,7 @@
+ def one_hot_2D(targets,C = 2):
+     targets_extend=targets.clone()
+     targets_extend.unsqueeze_(1) # convert to Nx1xHxW
+-    one_hot = torch.cuda.FloatTensor(targets_extend.size(0), C, targets_extend.size(2), targets_extend.size(3)).zero_()
++    one_hot = torch.FloatTensor(targets_extend.size(0), C, targets_extend.size(2), targets_extend.size(3)).zero_()
+     one_hot.scatter_(1, targets_extend, 1)
+     return one_hot
+ 
+@@ -291,7 +292,7 @@
+         print(f"total params: \t{sum([np.prod(p.size()) for p in model.parameters()])}")
+ 
+         if not check_wo_gpu:
+-            device = torch.device('cuda:{}'.format(args.local_rank))
++            device = torch.device('cpu')
+             model.to(device)
+ 
+         optimizer = torch.optim.SGD(model.parameters(), args.learning_rate, momentum=0.99, nesterov=True)
+@@ -309,12 +310,12 @@
+             print('loading from checkpoint: {}'.format(args.reload_path))
+             if os.path.exists(args.reload_path):
+                 if args.FP16:
+-                    checkpoint = torch.load(args.reload_path, map_location=torch.device('cpu'))
++                    checkpoint = torch.load(args.reload_path, map_location=torch.device('cpu'), weights_only=True)
+                     model.load_state_dict(checkpoint['model'])
+                     optimizer.load_state_dict(checkpoint['optimizer'])
+                     amp.load_state_dict(checkpoint['amp'])
+                 else:
+-                    model.load_state_dict(torch.load(args.reload_path, map_location=torch.device('cpu')))
++                    model.load_state_dict(torch.load(args.reload_path, map_location=torch.device('cpu'), weights_only=True))
+             else:
+                 print('File not exists in the reload path: {}'.format(args.reload_path))
+ 
+@@ -324,7 +325,7 @@
+ 
+         edge_weight = args.edge_weight
+ 
+-        num_worker = 8
++        num_worker = 0
+ 
+         valloader = DataLoader(
+             MOTSValDataSet_joint(args.valset_dir, args.val_list, max_iters=args.itrs_each_epoch * args.batch_size,
+@@ -340,7 +341,7 @@
+         batch_size = args.batch_size
+         # for epoch in range(0,args.num_epochs):
+ 
+-        model.load_state_dict(torch.load(args.reload_path, map_location=torch.device('cpu')))
++        model.load_state_dict(torch.load(args.reload_path, map_location=torch.device('cpu'), weights_only=True))
+ 
+         model.eval()
+         task0_pool_image = ImagePool(8)
+@@ -453,14 +454,14 @@
+             for iter, batch in enumerate(valloader):
+ 
+                 'dataloader'
+-                imgs = batch[0].cuda()
+-                #lbls = batch[1].cuda()
+-                #wt = batch[2].cuda().float()
++                imgs = batch[0].cpu()
++                #lbls = batch[1].cpu()
++                #wt = batch[2].cpu().float()
+                 volumeName = batch[1]
+-                t_ids = batch[2].cuda()
++                t_ids = batch[2].cpu()
+                 s_ids = batch[3]
+                 backup_shape = batch[4].item()
+-                origin_images = batch[5].cuda()
++                origin_images = batch[5].cpu()
+                 #print(backup_shape)
+                 #print(origin_images.shape)
+                 #print(imgs.shape)
+@@ -587,28 +588,28 @@
+                     #print(origin.shape)
+                     #labels = task0_pool_mask.query(batch_size)
+ 
+-                    scales = torch.ones(batch_size).cuda()
++                    scales = torch.ones(batch_size).cpu()
+                     filename = []
+                     for bi in range(len(scales)):
+                         scales[int(len(scales) - 1 - bi)] = task0_scale.pop(0)
+                         filename.append(task0_name.pop(0))
+ 
+ 
+-                    preds_0, _ = model(images, torch.ones(batch_size).cuda() * 0, scales)
+-                    preds_1, _ = model(images, torch.ones(batch_size).cuda() * 1, scales)
+-                    preds_2, _ = model(images, torch.ones(batch_size).cuda() * 2, scales)
+-                    preds_3, _ = model(images, torch.ones(batch_size).cuda() * 3, scales)
+-                    preds_4, _ = model(images, torch.ones(batch_size).cuda() * 4, scales)
+-                    preds_5, _ = model(images, torch.ones(batch_size).cuda() * 5, scales)
+-                    preds_6, _ = model(images, torch.ones(batch_size).cuda() * 6, scales)
+-                    preds_7, _ = model(images, torch.ones(batch_size).cuda() * 7, scales)
+-                    preds_8, _ = model(images, torch.ones(batch_size).cuda() * 8, scales)
+-                    preds_9, _ = model(images, torch.ones(batch_size).cuda() * 9, scales)
+-                    preds_10, _ = model(images, torch.ones(batch_size).cuda() * 10, scales)
+-                    preds_11, _ = model(images, torch.ones(batch_size).cuda() * 11, scales)
+-                    preds_12, _ = model(images, torch.ones(batch_size).cuda() * 12, scales)
+-                    preds_13, _ = model(images, torch.ones(batch_size).cuda() * 13, scales)
+-                    preds_14, _ = model(images, torch.ones(batch_size).cuda() * 14, scales)
++                    preds_0, _ = model(images, torch.ones(batch_size).cpu() * 0, scales)
++                    preds_1, _ = model(images, torch.ones(batch_size).cpu() * 1, scales)
++                    preds_2, _ = model(images, torch.ones(batch_size).cpu() * 2, scales)
++                    preds_3, _ = model(images, torch.ones(batch_size).cpu() * 3, scales)
++                    preds_4, _ = model(images, torch.ones(batch_size).cpu() * 4, scales)
++                    preds_5, _ = model(images, torch.ones(batch_size).cpu() * 5, scales)
++                    preds_6, _ = model(images, torch.ones(batch_size).cpu() * 6, scales)
++                    preds_7, _ = model(images, torch.ones(batch_size).cpu() * 7, scales)
++                    preds_8, _ = model(images, torch.ones(batch_size).cpu() * 8, scales)
++                    preds_9, _ = model(images, torch.ones(batch_size).cpu() * 9, scales)
++                    preds_10, _ = model(images, torch.ones(batch_size).cpu() * 10, scales)
++                    preds_11, _ = model(images, torch.ones(batch_size).cpu() * 11, scales)
++                    preds_12, _ = model(images, torch.ones(batch_size).cpu() * 12, scales)
++                    preds_13, _ = model(images, torch.ones(batch_size).cpu() * 13, scales)
++                    preds_14, _ = model(images, torch.ones(batch_size).cpu() * 14, scales)
+                     #now_preds = preds[:,1,...] > preds[:,0,...]
+                     #now_preds_onehot = one_hot_2D(now_preds.long())
+ 
+@@ -744,27 +745,27 @@
+                 # labels = torch.cat((labels, replicated_label), dim=0)
+ 
+                 #now_task = torch.tensor(0)
+-                scales = torch.ones(left_size).cuda()
++                scales = torch.ones(left_size).cpu()
+                 filename = []
+                 for bi in range(len(scales)):
+                     scales[int(len(scales) - 1 - bi)] = task0_scale.pop(0)
+                     filename.append(task0_name.pop(0))
+ 
+-                preds_0, _ = model(images, torch.ones(batch_size).cuda() * 0, scales)
+-                preds_1, _ = model(images, torch.ones(batch_size).cuda() * 1, scales)
+-                preds_2, _ = model(images, torch.ones(batch_size).cuda() * 2, scales)
+-                preds_3, _ = model(images, torch.ones(batch_size).cuda() * 3, scales)
+-                preds_4, _ = model(images, torch.ones(batch_size).cuda() * 4, scales)
+-                preds_5, _ = model(images, torch.ones(batch_size).cuda() * 5, scales)
+-                preds_6, _ = model(images, torch.ones(batch_size).cuda() * 6, scales)
+-                preds_7, _ = model(images, torch.ones(batch_size).cuda() * 7, scales)
+-                preds_8, _ = model(images, torch.ones(batch_size).cuda() * 8, scales)
+-                preds_9, _ = model(images, torch.ones(batch_size).cuda() * 9, scales)
+-                preds_10, _ = model(images, torch.ones(batch_size).cuda() * 10, scales)
+-                preds_11, _ = model(images, torch.ones(batch_size).cuda() * 11, scales)
+-                preds_12, _ = model(images, torch.ones(batch_size).cuda() * 12, scales)
+-                preds_13, _ = model(images, torch.ones(batch_size).cuda() * 13, scales)
+-                preds_14, _ = model(images, torch.ones(batch_size).cuda() * 14, scales)
++                preds_0, _ = model(images, torch.ones(batch_size).cpu() * 0, scales)
++                preds_1, _ = model(images, torch.ones(batch_size).cpu() * 1, scales)
++                preds_2, _ = model(images, torch.ones(batch_size).cpu() * 2, scales)
++                preds_3, _ = model(images, torch.ones(batch_size).cpu() * 3, scales)
++                preds_4, _ = model(images, torch.ones(batch_size).cpu() * 4, scales)
++                preds_5, _ = model(images, torch.ones(batch_size).cpu() * 5, scales)
++                preds_6, _ = model(images, torch.ones(batch_size).cpu() * 6, scales)
++                preds_7, _ = model(images, torch.ones(batch_size).cpu() * 7, scales)
++                preds_8, _ = model(images, torch.ones(batch_size).cpu() * 8, scales)
++                preds_9, _ = model(images, torch.ones(batch_size).cpu() * 9, scales)
++                preds_10, _ = model(images, torch.ones(batch_size).cpu() * 10, scales)
++                preds_11, _ = model(images, torch.ones(batch_size).cpu() * 11, scales)
++                preds_12, _ = model(images, torch.ones(batch_size).cpu() * 12, scales)
++                preds_13, _ = model(images, torch.ones(batch_size).cpu() * 13, scales)
++                preds_14, _ = model(images, torch.ones(batch_size).cpu() * 14, scales)
+                 # now_preds = preds[:,1,...] > preds[:,0,...]
+ 
+                 # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -894,13 +895,13 @@
+             #     left_size = task1_pool_image.num_imgs
+             #     images = task1_pool_image.query(left_size)
+             #     # labels = task1_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task1_scale.pop(0)
+             #         filename.append(task1_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 1, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 1, scales)
+             #     now_task = torch.tensor(1)
+             #
+             #     # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -934,13 +935,13 @@
+             #     left_size = task2_pool_image.num_imgs
+             #     images = task2_pool_image.query(left_size)
+             #     # labels = task2_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task2_scale.pop(0)
+             #         filename.append(task2_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 2, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 2, scales)
+             #     now_task = torch.tensor(2)
+             #
+             #     # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -975,13 +976,13 @@
+             #     left_size = task3_pool_image.num_imgs
+             #     images = task3_pool_image.query(left_size)
+             #     # labels = task3_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task3_scale.pop(0)
+             #         filename.append(task3_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 3, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 3, scales)
+             #     now_task = torch.tensor(3)
+             #
+             #     # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -1017,14 +1018,14 @@
+             #     left_size = task4_pool_image.num_imgs
+             #     images = task4_pool_image.query(left_size)
+             #     # labels = task4_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task4_scale.pop(0)
+             #         filename.append(task4_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 4, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 4, scales)
+             #     now_task = torch.tensor(4)
+             #
+             #     # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -1060,13 +1061,13 @@
+             #     left_size = task5_pool_image.num_imgs
+             #     images = task5_pool_image.query(left_size)
+             #     # labels = task5_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task5_scale.pop(0)
+             #         filename.append(task5_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 5, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 5, scales)
+             #     now_task = torch.tensor(5)
+             #
+             #     # now_preds = preds[:, 1, ...] > preds[:, 0, ...]
+@@ -1103,13 +1104,13 @@
+             #     left_size = task6_pool_image.num_imgs
+             #     images = task6_pool_image.query(left_size)
+             #     # labels = task6_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task6_scale.pop(0)
+             #         filename.append(task6_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 6, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 6, scales)
+             #     now_task = torch.tensor(6)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1151,13 +1152,13 @@
+             #     left_size = task7_pool_image.num_imgs
+             #     images = task7_pool_image.query(left_size)
+             #     # labels = task7_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task7_scale.pop(0)
+             #         filename.append(task7_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 7, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 7, scales)
+             #     now_task = torch.tensor(7)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1199,13 +1200,13 @@
+             #     left_size = task8_pool_image.num_imgs
+             #     images = task8_pool_image.query(left_size)
+             #     # labels = task8_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task8_scale.pop(0)
+             #         filename.append(task8_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 8, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 8, scales)
+             #     now_task = torch.tensor(8)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1247,13 +1248,13 @@
+             #     left_size = task9_pool_image.num_imgs
+             #     images = task9_pool_image.query(left_size)
+             #     # labels = task9_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task9_scale.pop(0)
+             #         filename.append(task9_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 9, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 9, scales)
+             #     now_task = torch.tensor(9)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1295,13 +1296,13 @@
+             #     left_size = task10_pool_image.num_imgs
+             #     images = task10_pool_image.query(left_size)
+             #     # labels = task10_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task10_scale.pop(0)
+             #         filename.append(task10_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 10, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 10, scales)
+             #     now_task = torch.tensor(10)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1343,13 +1344,13 @@
+             #     left_size = task11_pool_image.num_imgs
+             #     images = task11_pool_image.query(left_size)
+             #     # labels = task11_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task11_scale.pop(0)
+             #         filename.append(task11_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 11, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 11, scales)
+             #     now_task = torch.tensor(11)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1391,13 +1392,13 @@
+             #     left_size = task12_pool_image.num_imgs
+             #     images = task12_pool_image.query(left_size)
+             #     # labels = task12_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task12_scale.pop(0)
+             #         filename.append(task12_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 12, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 12, scales)
+             #     now_task = torch.tensor(12)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1439,13 +1440,13 @@
+             #     left_size = task13_pool_image.num_imgs
+             #     images = task13_pool_image.query(left_size)
+             #     # labels = task13_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task13_scale.pop(0)
+             #         filename.append(task13_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 13, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 13, scales)
+             #     now_task = torch.tensor(13)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+@@ -1487,13 +1488,13 @@
+             #     left_size = task14_pool_image.num_imgs
+             #     images = task14_pool_image.query(left_size)
+             #     # labels = task14_pool_mask.query(left_size)
+-            #     scales = torch.ones(left_size).cuda()
++            #     scales = torch.ones(left_size).cpu()
+             #     filename = []
+             #     for bi in range(len(scales)):
+             #         scales[int(len(scales) - 1 - bi)] = task14_scale.pop(0)
+             #         filename.append(task14_name.pop(0))
+             #
+-            #     preds, _ = model(images, torch.ones(left_size).cuda() * 14, scales)
++            #     preds, _ = model(images, torch.ones(left_size).cpu() * 14, scales)
+             #     now_task = torch.tensor(14)
+             #     # print("PREDS.shape:", preds.shape)
+             #
+--- upstream/unet2D_ns_for_Glo_v2.py
++++ compat_cpu/unet2D_ns_for_Glo_v2.py
+@@ -161,7 +161,7 @@
+         task_encoding = torch.zeros(size=(N, 15))
+         for i in range(N):
+             task_encoding[i, task_id[i].long()]=1
+-        return task_encoding.cuda()
++        return task_encoding.cpu()
+ 
+     def encoding_scale(self, task_id):
+         N = task_id.shape[0]
+@@ -169,7 +169,7 @@
+         task_encoding = torch.zeros(size=(N, 4))  #### change the channel
+         for i in range(N):
+             task_encoding[i, task_id[i].long()]=1
+-        return task_encoding.cuda()
++        return task_encoding.cpu()
+ 
+     def parse_dynamic_params(self, params, channels, weight_nums, bias_nums):
+         assert params.dim() == 2
+@@ -239,9 +239,9 @@
+ 
+         x_feat = self.GAP(x)
+ 
+-        #x_cond = torch.zeros((len(scale_encoding), 256 * 6 * 4, 1, 1)).cuda().float()  #change channel
++        #x_cond = torch.zeros((len(scale_encoding), 256 * 6 * 4, 1, 1)).cpu().float()  #change channel
+         ####################################################################
+-        x_cond = torch.zeros((len(scale_encoding), 256 * 15 * 4, 1, 1)).cuda().float()
++        x_cond = torch.zeros((len(scale_encoding), 256 * 15 * 4, 1, 1)).cpu().float()
+         ####################################################################
+         for xi in range(len(x_feat)):
+             now_x_feat = x_feat[xi].squeeze(-1).squeeze(-1)

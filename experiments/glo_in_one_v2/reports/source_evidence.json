@@ -1,0 +1,129 @@
+{
+  "Glo_v2_segmentation.py": [
+    {
+      "line": 51,
+      "text": "subprocess.run(save_csv)"
+    },
+    {
+      "line": 52,
+      "text": "subprocess.run(testing)"
+    }
+  ],
+  "testing_2D_patch_v2.py": [
+    {
+      "line": 611,
+      "text": "preds_14, _ = model(images, torch.ones(batch_size).cuda() * 14, scales)"
+    },
+    {
+      "line": 690,
+      "text": "prediction_14 = preds_14[pi, 1, ...] > preds_14[pi, 0, ...]"
+    },
+    {
+      "line": 706,
+      "text": "merged_mask = np.concatenate("
+    },
+    {
+      "line": 716,
+      "text": "np.save(os.path.join(output_folder, os.path.basename(filename[pi]) + '_preds_merged.npy'), merged_mask)"
+    },
+    {
+      "line": 767,
+      "text": "preds_14, _ = model(images, torch.ones(batch_size).cuda() * 14, scales)"
+    },
+    {
+      "line": 851,
+      "text": "prediction_14 = preds_14[pi, 1, ...] > preds_14[pi, 0, ...]"
+    },
+    {
+      "line": 868,
+      "text": "merged_mask = np.concatenate("
+    },
+    {
+      "line": 878,
+      "text": "np.save(os.path.join(output_folder, os.path.basename(filename[pi]) + '_preds_merged.npy'), merged_mask)"
+    }
+  ],
+  "MOTSDataset_2D_Patch_normal_save_csv_Glo_v2.py": [
+    {
+      "line": 123,
+      "text": "tasks_id = 0"
+    },
+    {
+      "line": 124,
+      "text": "scale_id = 0"
+    },
+    {
+      "line": 337,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 556,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    }
+  ],
+  "MOTSDataset_2D_Patch_supervise_normal_csv_Glo_v2.py": [
+    {
+      "line": 168,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 249,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 315,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 389,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 423,
+      "text": "origin_image = plt.imread(datafiles[\"image_path\"])"
+    },
+    {
+      "line": 432,
+      "text": "image = origin_image[:, :, :3]"
+    },
+    {
+      "line": 471,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 476,
+      "text": "origin_image = origin_image.astype(np.float32)"
+    },
+    {
+      "line": 506,
+      "text": "origin_image = plt.imread(datafiles[\"image_path\"])"
+    },
+    {
+      "line": 515,
+      "text": "image = origin_image[:, :, :3]"
+    },
+    {
+      "line": 520,
+      "text": "image = image[0].transpose((2, 0, 1))  # Channel x H x W"
+    },
+    {
+      "line": 523,
+      "text": "origin_image = origin_image.astype(np.float32)"
+    }
+  ],
+  "unet2D_ns_for_Glo_v2.py": [
+    {
+      "line": 164,
+      "text": "return task_encoding.cuda()"
+    },
+    {
+      "line": 172,
+      "text": "return task_encoding.cuda()"
+    },
+    {
+      "line": 244,
+      "text": "x_cond = torch.zeros((len(scale_encoding), 256 * 15 * 4, 1, 1)).cuda().float()"
+    }
+  ],
+  "train_2D_patch.py": []
+}
